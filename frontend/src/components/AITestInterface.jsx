@@ -683,12 +683,17 @@ export default function AITestInterface() {
                           <h5 className="font-medium text-gray-900 mb-3 flex items-center justify-between">
                             <span>Test Cases</span>
                             <span className="text-sm text-gray-600">
-                              {result.analysis.testResults.filter(t => t.includes('pass')).length}/{result.analysis.testResults.length} passed
+                              {result.analysis.testResults.filter(t => {
+                                // Handle both object format (t.passed) and string format (t.includes('pass'))
+                                return typeof t === 'object' ? t.passed : t.includes('pass');
+                              }).length}/{result.analysis.testResults.length} passed
                             </span>
                           </h5>
                           <div className="space-y-2">
                             {result.analysis.testResults.map((test, idx) => {
-                              const passed = test.includes('pass');
+                              // Handle both object and string formats
+                              const passed = typeof test === 'object' ? test.passed : test.includes('pass');
+                              
                               return (
                                 <div key={idx} className={`flex items-center space-x-2 p-2 rounded text-sm ${
                                   passed ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
@@ -698,7 +703,24 @@ export default function AITestInterface() {
                                   ) : (
                                     <AlertCircle className="h-4 w-4" />
                                   )}
-                                  <span className="font-mono">{test}</span>
+                                  
+                                  {typeof test === 'object' ? (
+                                    // Object format - show detailed test info
+                                    <>
+                                      <span className="font-mono">Input: {test.input}</span>
+                                      <span>→</span>
+                                      <span className="font-mono">Expected: {test.expectedOutput}</span>
+                                      {!passed && test.actualOutput && (
+                                        <>
+                                          <span>→</span>
+                                          <span className="font-mono">Got: {test.actualOutput}</span>
+                                        </>
+                                      )}
+                                    </>
+                                  ) : (
+                                    // String format - show as is
+                                    <span className="font-mono">{test}</span>
+                                  )}
                                 </div>
                               );
                             })}
