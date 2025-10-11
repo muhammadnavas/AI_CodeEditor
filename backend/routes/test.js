@@ -293,13 +293,13 @@ router.post('/test-code', async (req, res) => {
       return res.status(400).json({ error: 'Question not found' });
     }
 
-    // Test with sample cases only (first 2-3 examples)
-    let sampleTests = [];
+    // Test with sample cases only
+    let sampleTestResults = [];
     let output = null;
     let error = null;
 
     try {
-      // Execute the code to get output
+      // Execute the code to get basic output
       const executionResult = await executeCode(code, session.language);
       
       if (executionResult.error) {
@@ -315,40 +315,19 @@ router.post('/test-code', async (req, res) => {
           error = executionResult.error;
         } else {
           // Simulate execution for import errors
-          output = 'Code structure looks good. Sample execution simulated.';
+          output = 'Code structure looks good. Running sample tests...';
         }
       } else {
         output = executionResult.output;
       }
 
-      // Generate sample test cases from examples
-      if (question.examples && Array.isArray(question.examples)) {
-        // Take first 2-3 examples as sample tests
-        const sampleExamples = question.examples.slice(0, Math.min(3, question.examples.length));
-        
-        for (const example of sampleExamples) {
-          if (typeof example === 'object' && example.input && example.output) {
-            try {
-              // Simple test execution (this would need to be enhanced based on language)
-              const testResult = {
-                input: example.input,
-                expected: example.output,
-                passed: true, // Simplified for now
-                actual: example.output // Simplified for now
-              };
-              
-              sampleTests.push(testResult);
-            } catch (testError) {
-              sampleTests.push({
-                input: example.input,
-                expected: example.output,
-                passed: false,
-                actual: 'Error',
-                error: testError.message
-              });
-            }
-          }
-        }
+      // Run sample tests from the question
+      if (question.sampleTests && question.sampleTests.length > 0) {
+        sampleTestResults = await runSampleTests(code, session.language, question.sampleTests);
+      } else if (question.testCases && question.testCases.length > 0) {
+        // Fallback to first few test cases as samples
+        const sampleCases = question.testCases.slice(0, Math.min(3, question.testCases.length));
+        sampleTestResults = await runSampleTests(code, session.language, sampleCases);
       }
 
     } catch (execError) {
@@ -358,7 +337,7 @@ router.post('/test-code', async (req, res) => {
     res.json({
       output,
       error,
-      sampleTests,
+      sampleTests: sampleTestResults,
       message: error ? 'Please check your code and try again.' : 'Sample tests completed. Click Submit when ready for full evaluation.'
     });
 
@@ -533,11 +512,51 @@ router.get('/results/:sessionId', async (req, res) => {
 
 // Helper function to generate unique questions (no repeats)
 async function generateUniqueQuestion(difficulty, language, questionIndex, session) {
+  // Get LeetCode problems that match the difficulty
+  const leetCodeKeys = Object.keys(leetCodeProblems).filter(key => 
+    leetCodeProblems[key].difficulty === difficulty
+  );
+  
+  if (leetCodeKeys.length > 0) {
+    // Use unused LeetCode problems first
+    const unusedProblems = leetCodeKeys.filter(key => !session.usedQuestionTypes.has(key));
+    
+    if (unusedProblems.length === 0) {
+      // If all problems used, reset and reuse
+      session.usedQuestionTypes.clear();
+    }
+    
+    const selectedKey = unusedProblems.length > 0 ? 
+      unusedProblems[questionIndex % unusedProblems.length] :
+      leetCodeKeys[questionIndex % leetCodeKeys.length];
+    
+    session.usedQuestionTypes.add(selectedKey);
+    
+    const problem = leetCodeProblems[selectedKey];
+    const testCases = generateTestCases(selectedKey, language);
+    
+    return {
+      title: problem.title,
+      description: problem.description,
+      examples: problem.examples,
+      signature: getLanguageTemplate(language, selectedKey),
+      testCases: testCases.allTests,
+      sampleTests: testCases.sampleTests,
+      hiddenTests: testCases.hiddenTests,
+      constraints: problem.constraints,
+      complexity: getExpectedComplexity(selectedKey),
+      difficulty: problem.difficulty,
+      language: language,
+      questionNumber: questionIndex + 1,
+      timeLimit: 300
+    };
+  }
+  
+  // Fallback to original question generation
   const availableQuestions = questionCategories[language]?.[difficulty] || questionCategories.javascript.easy;
   const unusedQuestions = availableQuestions.filter(q => !session.usedQuestionTypes.has(q));
   
   if (unusedQuestions.length === 0) {
-    // If all questions used, reset and reuse
     session.usedQuestionTypes.clear();
   }
   
@@ -548,6 +567,70 @@ async function generateUniqueQuestion(difficulty, language, questionIndex, sessi
   session.usedQuestionTypes.add(selectedQuestion);
   
   return await generateQuestion(difficulty, language, questionIndex, selectedQuestion);
+}
+
+// Helper function to get language-specific templates for LeetCode problems
+function getLanguageTemplate(language, problemKey) {
+  const templates = {
+    "sum of two numbers": {
+      javascript: "function twoSum(nums, target) {\n    // Your code here\n}",
+      python: "def two_sum(nums, target):\n    # Your code here\n    pass",
+      java: "public int[] twoSum(int[] nums, int target) {\n    // Your code here\n}",
+      cpp: "vector<int> twoSum(vector<int>& nums, int target) {\n    // Your code here\n}",
+      typescript: "function twoSum(nums: number[], target: number): number[] {\n    // Your code here\n}"
+    },
+    "reverse a string": {
+      javascript: "function reverseString(s) {\n    // Your code here\n}",
+      python: "def reverse_string(s):\n    # Your code here\n    pass",
+      java: "public void reverseString(char[] s) {\n    // Your code here\n}",
+      cpp: "void reverseString(vector<char>& s) {\n    // Your code here\n}",
+      typescript: "function reverseString(s: string[]): void {\n    // Your code here\n}"
+    },
+    "largest number in array": {
+      javascript: "function findMax(nums) {\n    // Your code here\n}",
+      python: "def find_max(nums):\n    # Your code here\n    pass",
+      java: "public int findMax(int[] nums) {\n    // Your code here\n}",
+      cpp: "int findMax(vector<int>& nums) {\n    // Your code here\n}",
+      typescript: "function findMax(nums: number[]): number {\n    // Your code here\n}"
+    },
+    "palindrome": {
+      javascript: "function isPalindrome(s) {\n    // Your code here\n}",
+      python: "def is_palindrome(s):\n    # Your code here\n    pass",
+      java: "public boolean isPalindrome(String s) {\n    // Your code here\n}",
+      cpp: "bool isPalindrome(string s) {\n    // Your code here\n}",
+      typescript: "function isPalindrome(s: string): boolean {\n    // Your code here\n}"
+    },
+    "binary search": {
+      javascript: "function search(nums, target) {\n    // Your code here\n}",
+      python: "def search(nums, target):\n    # Your code here\n    pass",
+      java: "public int search(int[] nums, int target) {\n    // Your code here\n}",
+      cpp: "int search(vector<int>& nums, int target) {\n    // Your code here\n}",
+      typescript: "function search(nums: number[], target: number): number {\n    // Your code here\n}"
+    },
+    "sum of squares": {
+      javascript: "function sumOfSquares(nums) {\n    // Calculate the sum of squares of all numbers in the array\n    // Example: [1, 2, 3] should return 1² + 2² + 3² = 14\n    \n    // Your code here\n}",
+      python: "def sum_of_squares(nums):\n    # Calculate the sum of squares of all numbers in the array\n    # Example: [1, 2, 3] should return 1² + 2² + 3² = 14\n    \n    # Your code here\n    pass",
+      java: "public int sumOfSquares(int[] nums) {\n    // Calculate the sum of squares of all numbers in the array\n    // Example: [1, 2, 3] should return 1² + 2² + 3² = 14\n    \n    // Your code here\n}",
+      cpp: "int sumOfSquares(vector<int>& nums) {\n    // Calculate the sum of squares of all numbers in the array\n    // Example: [1, 2, 3] should return 1² + 2² + 3² = 14\n    \n    // Your code here\n}",
+      typescript: "function sumOfSquares(nums: number[]): number {\n    // Calculate the sum of squares of all numbers in the array\n    // Example: [1, 2, 3] should return 1² + 2² + 3² = 14\n    \n    // Your code here\n}"
+    }
+  };
+  
+  return templates[problemKey]?.[language] || templates[problemKey]?.javascript || "// Write your solution here";
+}
+
+// Helper function to get expected complexity for problems
+function getExpectedComplexity(problemKey) {
+  const complexities = {
+    "sum of two numbers": "Time: O(n²) brute force, O(n) optimal; Space: O(n)",
+    "reverse a string": "Time: O(n); Space: O(1)",
+    "largest number in array": "Time: O(n); Space: O(1)",
+    "palindrome": "Time: O(n); Space: O(1)",
+    "binary search": "Time: O(log n); Space: O(1)",
+    "sum of squares": "Time: O(n); Space: O(1)"
+  };
+  
+  return complexities[problemKey] || "To be analyzed";
 }
 
 // Helper function to generate questions
@@ -868,7 +951,178 @@ function generateSampleExamples(questionDescription, language) {
 }
 
 // Helper function to generate test cases for automatic validation
+// LeetCode-style problem definitions with comprehensive test cases
+const leetCodeProblems = {
+  "sum of two numbers": {
+    title: "Two Sum",
+    description: "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.",
+    examples: [
+      {
+        input: "nums = [2,7,11,15], target = 9",
+        output: "[0,1]",
+        explanation: "Because nums[0] + nums[1] == 9, we return [0, 1]."
+      },
+      {
+        input: "nums = [3,2,4], target = 6", 
+        output: "[1,2]",
+        explanation: "Because nums[1] + nums[2] == 6, we return [1, 2]."
+      }
+    ],
+    sampleTests: [
+      { input: "[2,7,11,15], 9", expectedOutput: "[0,1]", description: "Basic case" },
+      { input: "[3,2,4], 6", expectedOutput: "[1,2]", description: "Different indices" }
+    ],
+    hiddenTests: [
+      { input: "[3,3], 6", expectedOutput: "[0,1]", description: "Duplicate values" },
+      { input: "[1,5,7,9], 10", expectedOutput: "[0,3]", description: "Larger array" },
+      { input: "[-1,2,1,-4], 0", expectedOutput: "[0,2]", description: "Negative numbers" }
+    ],
+    constraints: "2 ≤ nums.length ≤ 10^4, -10^9 ≤ nums[i] ≤ 10^9, -10^9 ≤ target ≤ 10^9",
+    difficulty: "easy"
+  },
+
+  "reverse a string": {
+    title: "Reverse String",
+    description: "Write a function that reverses a string. The input string is given as an array of characters s.",
+    examples: [
+      {
+        input: 's = ["h","e","l","l","o"]',
+        output: '["o","l","l","e","h"]',
+        explanation: "Reverse the array of characters in-place."
+      }
+    ],
+    sampleTests: [
+      { input: '["h","e","l","l","o"]', expectedOutput: '["o","l","l","e","h"]', description: "Basic reversal" },
+      { input: '["H","a","n","n","a","h"]', expectedOutput: '["h","a","n","n","a","H"]', description: "Palindrome name" }
+    ],
+    hiddenTests: [
+      { input: '["a"]', expectedOutput: '["a"]', description: "Single character" },
+      { input: '["A"," ","m","a","n",","," ","a"," ","p","l","a","n",","," ","a"," ","c","a","n","a","l",":"," ","P","a","n","a","m","a"]', expectedOutput: '["a","m","a","n","a","P"," ",":","l","a","n","a","c"," ","a"," ",",","n","a","l","p"," ","a"," ",",","n","a","m"," ","A"]', description: "Long sentence" },
+      { input: '[]', expectedOutput: '[]', description: "Empty array" }
+    ],
+    constraints: "1 ≤ s.length ≤ 10^5",
+    difficulty: "easy"
+  },
+
+  "largest number in array": {
+    title: "Find Maximum in Array",
+    description: "Given an array of integers, find and return the largest number.",
+    examples: [
+      {
+        input: "nums = [1,3,2,5,4]",
+        output: "5",
+        explanation: "5 is the largest number in the array."
+      }
+    ],
+    sampleTests: [
+      { input: "[1,3,2,5,4]", expectedOutput: "5", description: "Mixed positive numbers" },
+      { input: "[10,22,5,75,65,80]", expectedOutput: "80", description: "Larger numbers" }
+    ],
+    hiddenTests: [
+      { input: "[-5,-1,-10,-3]", expectedOutput: "-1", description: "All negative numbers" },
+      { input: "[42]", expectedOutput: "42", description: "Single element" },
+      { input: "[0,0,0,0]", expectedOutput: "0", description: "All zeros" },
+      { input: "[-100,100,-50,50]", expectedOutput: "100", description: "Mix of positive and negative" }
+    ],
+    constraints: "1 ≤ nums.length ≤ 10^4, -10^9 ≤ nums[i] ≤ 10^9",
+    difficulty: "easy"
+  },
+
+  "palindrome": {
+    title: "Valid Palindrome",
+    description: "A phrase is a palindrome if, after converting all uppercase letters into lowercase letters and removing all non-alphanumeric characters, it reads the same forward and backward.",
+    examples: [
+      {
+        input: 's = "A man, a plan, a canal: Panama"',
+        output: "true",
+        explanation: 'After removing non-alphanumeric characters: "amanaplanacanalpanama", which is a palindrome.'
+      }
+    ],
+    sampleTests: [
+      { input: '"A man, a plan, a canal: Panama"', expectedOutput: "true", description: "Classic palindrome" },
+      { input: '"race a car"', expectedOutput: "false", description: "Not a palindrome" }
+    ],
+    hiddenTests: [
+      { input: '""', expectedOutput: "true", description: "Empty string" },
+      { input: '"a"', expectedOutput: "true", description: "Single character" },
+      { input: '"Madam"', expectedOutput: "true", description: "Simple word palindrome" },
+      { input: '"No \'x\' in Nixon"', expectedOutput: "true", description: "Complex palindrome with punctuation" }
+    ],
+    constraints: "1 ≤ s.length ≤ 2 * 10^5",
+    difficulty: "medium"
+  },
+
+  "binary search": {
+    title: "Binary Search",
+    description: "Given an array of integers nums which is sorted in ascending order, and an integer target, write a function to search target in nums. If target exists, then return its index. Otherwise, return -1.",
+    examples: [
+      {
+        input: "nums = [-1,0,3,5,9,12], target = 9",
+        output: "4",
+        explanation: "9 exists in nums and its index is 4"
+      }
+    ],
+    sampleTests: [
+      { input: "[-1,0,3,5,9,12], 9", expectedOutput: "4", description: "Target found" },
+      { input: "[-1,0,3,5,9,12], 2", expectedOutput: "-1", description: "Target not found" }
+    ],
+    hiddenTests: [
+      { input: "[5], 5", expectedOutput: "0", description: "Single element found" },
+      { input: "[5], -5", expectedOutput: "-1", description: "Single element not found" },
+      { input: "[1,2,3,4,5], 1", expectedOutput: "0", description: "First element" },
+      { input: "[1,2,3,4,5], 5", expectedOutput: "4", description: "Last element" },
+      { input: "[1,3,5,7,9], 6", expectedOutput: "-1", description: "Missing middle element" }
+    ],
+    constraints: "1 ≤ nums.length ≤ 10^4, -10^4 < nums[i], target < 10^4",
+    difficulty: "easy"
+  },
+
+  "sum of squares": {
+    title: "Sum of Squares",
+    description: "Write a function that takes an array of numbers as input and returns the sum of squares of all the numbers.",
+    examples: [
+      {
+        input: "nums = [1, 2, 3]",
+        output: "14",
+        explanation: "1² + 2² + 3² = 1 + 4 + 9 = 14"
+      },
+      {
+        input: "nums = [0, 5, 3, 2]",
+        output: "38",
+        explanation: "0² + 5² + 3² + 2² = 0 + 25 + 9 + 4 = 38"
+      }
+    ],
+    sampleTests: [
+      { input: "[1, 2, 3]", expectedOutput: "14", description: "Basic case" },
+      { input: "[0, 5, 3, 2]", expectedOutput: "38", description: "Mixed numbers" }
+    ],
+    hiddenTests: [
+      { input: "[10]", expectedOutput: "100", description: "Single element" },
+      { input: "[-2, -3, -1]", expectedOutput: "14", description: "Negative numbers" },
+      { input: "[0, 0, 0, 0]", expectedOutput: "0", description: "All zeros" },
+      { input: "[1, -1, 2, -2]", expectedOutput: "10", description: "Mix of positive and negative" }
+    ],
+    constraints: "1 ≤ nums.length ≤ 100, -100 ≤ nums[i] ≤ 100",
+    difficulty: "easy"
+  }
+};
+
 function generateTestCases(questionDescription, language) {
+  // Find matching LeetCode problem
+  const problemKey = Object.keys(leetCodeProblems).find(key => 
+    questionDescription.toLowerCase().includes(key.toLowerCase())
+  );
+  
+  if (problemKey && leetCodeProblems[problemKey]) {
+    const problem = leetCodeProblems[problemKey];
+    return {
+      sampleTests: problem.sampleTests,
+      hiddenTests: problem.hiddenTests,
+      allTests: [...problem.sampleTests, ...problem.hiddenTests]
+    };
+  }
+
+  // Fallback to basic test cases
   const testCases = [];
   
   if (questionDescription.includes("sum of two numbers")) {
@@ -887,6 +1141,24 @@ function generateTestCases(questionDescription, language) {
         input: "0, 0",
         expectedOutput: "0",
         description: "Zero values test"
+      }
+    );
+  } else if (questionDescription.includes("sum of squares")) {
+    testCases.push(
+      {
+        input: "[1, 2, 3]",
+        expectedOutput: "14",
+        description: "Basic sum of squares test"
+      },
+      {
+        input: "[0, 5, 3, 2]",
+        expectedOutput: "38",
+        description: "Mixed numbers with zero"
+      },
+      {
+        input: "[-2, -3, -1]",
+        expectedOutput: "14",
+        description: "Negative numbers test"
       }
     );
   } else if (questionDescription.includes("even or odd")) {
@@ -1001,7 +1273,623 @@ function generateTestCases(questionDescription, language) {
     );
   }
   
-  return testCases;
+  return {
+    sampleTests: testCases.slice(0, 2), // First 2 as sample tests
+    hiddenTests: testCases.slice(2),    // Rest as hidden tests  
+    allTests: testCases
+  };
+}
+
+// PRODUCTION-GRADE: Sample test runner for recruitment accuracy
+async function runSampleTests(code, language, sampleTests) {
+  const results = [];
+  
+  for (const testCase of sampleTests) {
+    try {
+      // Use actual code execution for all supported languages
+      const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
+      if (language && jsLanguages.includes(language.toLowerCase())) {
+        // JavaScript - use VM-based execution
+        const result = await runJavaScriptTest(code, testCase);
+        result.simulated = false;
+        results.push(result);
+      } else {
+        // Other languages - use real system execution
+        const result = await runMultiLanguageTest(code, language, testCase);
+        results.push(result);
+      }
+    } catch (error) {
+      results.push({
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'System Error',
+        passed: false,
+        description: testCase.description,
+        error: `System error: ${error.message}`,
+        executionTime: 0
+      });
+    }
+  }
+  
+  return results;
+}
+
+// CRITICAL: Rigorous JavaScript test execution for recruitment
+async function runJavaScriptTest(code, testCase) {
+  const startTime = Date.now();
+  
+  try {
+    // Execute code to get function (silent mode for testing)
+    const codeExecution = await executeJavaScriptCode(code, startTime, true);
+    
+    if (codeExecution.error) {
+      return {
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'Code Error',
+        passed: false,
+        description: testCase.description,
+        error: codeExecution.error,
+        executionTime: codeExecution.executionTime
+      };
+    }
+
+    const functionName = codeExecution.functionName;
+    const capturedFunction = codeExecution.capturedFunction;
+
+    // CRITICAL: Ensure function exists
+    if (!functionName || !capturedFunction) {
+      return {
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'No Function Found',
+        passed: false,
+        description: testCase.description,
+        error: 'No valid function definition found in code',
+        executionTime: codeExecution.executionTime
+      };
+    }
+
+    // CRITICAL: Parse test inputs correctly
+    const testInput = parseTestInput(testCase.input);
+    const expectedOutput = parseExpectedOutput(testCase.expectedOutput);
+
+    // CRITICAL: Execute function with proper error handling
+    const vm = require('vm');
+    const testContext = {
+      testFunction: capturedFunction,
+      testInput: testInput,
+      Array, Object, JSON, Math, String, Number, Boolean,
+      result: undefined,
+      error: null,
+      console: {
+        log: () => {}, // Silent for test execution
+        error: () => {}
+      }
+    };
+
+    const testExecutionCode = `
+      try {
+        if (Array.isArray(testInput)) {
+          // Multiple parameters
+          result = testFunction(...testInput);
+        } else {
+          // Single parameter
+          result = testFunction(testInput);
+        }
+      } catch (err) {
+        error = err.message;
+      }
+    `;
+
+    vm.createContext(testContext);
+    vm.runInContext(testExecutionCode, testContext, {
+      timeout: 5000
+    });
+
+    if (testContext.error) {
+      return {
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'Runtime Error',
+        passed: false,
+        description: testCase.description,
+        error: testContext.error,
+        executionTime: Date.now() - startTime
+      };
+    }
+
+    const actualOutput = testContext.result;
+    
+    // CRITICAL: Precise output comparison
+    const passed = compareOutputsRigorous(actualOutput, expectedOutput);
+
+    return {
+      input: testCase.input,
+      expected: testCase.expectedOutput,
+      actual: formatOutputForDisplay(actualOutput),
+      passed: passed,
+      description: testCase.description,
+      error: null,
+      executionTime: Date.now() - startTime
+    };
+
+  } catch (error) {
+    return {
+      input: testCase.input,
+      expected: testCase.expectedOutput,
+      actual: 'Execution Error',
+      passed: false,
+      description: testCase.description,
+      error: error.message,
+      executionTime: Date.now() - startTime
+    };
+  }
+}
+
+// Multi-language test execution (Python, Java, C++, etc.)
+async function runMultiLanguageTest(code, language, testCase) {
+  const startTime = Date.now();
+  
+  try {
+    // Parse test inputs
+    const testInput = parseTestInput(testCase.input);
+    const expectedOutput = parseExpectedOutput(testCase.expectedOutput);
+    
+    // Create test wrapper code for the language
+    const testCode = createTestWrapper(code, language, testInput);
+    
+    // Execute the test code
+    const executionResult = await executeMultiLanguageCode(testCode, language, startTime, true);
+    
+    if (executionResult.error) {
+      return {
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'Code Error',
+        passed: false,
+        description: testCase.description,
+        error: executionResult.error,
+        executionTime: executionResult.executionTime,
+        simulated: false
+      };
+    }
+    
+    // Parse the actual output
+    const actualOutput = parseActualOutput(executionResult.output, language);
+    
+    // Compare outputs
+    const passed = compareOutputsRigorous(actualOutput, expectedOutput);
+    
+    return {
+      input: testCase.input,
+      expected: testCase.expectedOutput,
+      actual: formatOutputForDisplay(actualOutput),
+      passed: passed,
+      description: testCase.description,
+      error: null,
+      executionTime: executionResult.executionTime,
+      simulated: false
+    };
+    
+  } catch (error) {
+    return {
+      input: testCase.input,
+      expected: testCase.expectedOutput,
+      actual: 'Execution Error',
+      passed: false,
+      description: testCase.description,
+      error: error.message,
+      executionTime: Date.now() - startTime,
+      simulated: false
+    };
+  }
+}
+
+// Helper function to create test wrapper code for different languages
+function createTestWrapper(userCode, language, testInput) {
+  switch (language.toLowerCase()) {
+    case 'python':
+    case 'py':
+      return createPythonTestWrapper(userCode, testInput);
+    case 'java':
+      return createJavaTestWrapper(userCode, testInput);
+    case 'cpp':
+    case 'c++':
+      return createCppTestWrapper(userCode, testInput);
+    case 'c':
+      return createCTestWrapper(userCode, testInput);
+    case 'typescript':
+    case 'ts':
+      return createTypeScriptTestWrapper(userCode, testInput);
+    default:
+      throw new Error(`Test wrapper not implemented for ${language}`);
+  }
+}
+
+// Python test wrapper
+function createPythonTestWrapper(userCode, testInput) {
+  const inputStr = Array.isArray(testInput) 
+    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ')
+    : typeof testInput === 'string' ? `"${testInput}"` : JSON.stringify(testInput);
+    
+  return `${userCode}
+
+# Test execution
+if __name__ == "__main__":
+    try:
+        # Find the first function defined in user code
+        import inspect
+        import sys
+        
+        current_module = sys.modules[__name__]
+        functions = [name for name, obj in inspect.getmembers(current_module, inspect.isfunction) 
+                    if not name.startswith('__')]
+        
+        if functions:
+            func = getattr(current_module, functions[0])
+            ${Array.isArray(testInput) ? `result = func(${inputStr})` : `result = func(${inputStr})`}
+            print(result)
+        else:
+            print("No function found")
+    except Exception as e:
+        print(f"Error: {e}")
+`;
+}
+
+// Java test wrapper
+function createJavaTestWrapper(userCode, testInput) {
+  const classMatch = userCode.match(/class\s+(\w+)/);
+  const className = classMatch ? classMatch[1] : 'Solution';
+  
+  const inputStr = Array.isArray(testInput) 
+    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ')
+    : typeof testInput === 'string' ? `"${testInput}"` : JSON.stringify(testInput);
+    
+  // Insert main method if not exists
+  if (!userCode.includes('public static void main')) {
+    const insertPos = userCode.lastIndexOf('}');
+    const beforeMain = userCode.substring(0, insertPos);
+    const mainMethod = `
+    public static void main(String[] args) {
+        ${className} solution = new ${className}();
+        try {
+            // Call the first public method (assuming it's the solution method)
+            ${Array.isArray(testInput) ? `var result = solution.solve(${inputStr});` : `var result = solution.solve(${inputStr});`}
+            System.out.println(result);
+        } catch (Exception e) {
+            System.out.println("Error: " + e.getMessage());
+        }
+    }
+}`;
+    return beforeMain + mainMethod;
+  }
+  
+  return userCode;
+}
+
+// C++ test wrapper
+function createCppTestWrapper(userCode, testInput) {
+  const inputStr = Array.isArray(testInput) 
+    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : String(input)).join(', ')
+    : typeof testInput === 'string' ? `"${testInput}"` : String(testInput);
+    
+  return `#include <iostream>
+#include <vector>
+#include <string>
+#include <algorithm>
+using namespace std;
+
+${userCode}
+
+int main() {
+    try {
+        ${Array.isArray(testInput) ? `auto result = solution(${inputStr});` : `auto result = solution(${inputStr});`}
+        cout << result << endl;
+    } catch (const exception& e) {
+        cout << "Error: " << e.what() << endl;
+    }
+    return 0;
+}`;
+}
+
+// C test wrapper
+function createCTestWrapper(userCode, testInput) {
+  const inputStr = Array.isArray(testInput) 
+    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : String(input)).join(', ')
+    : typeof testInput === 'string' ? `"${testInput}"` : String(testInput);
+    
+  return `#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+${userCode}
+
+int main() {
+    ${Array.isArray(testInput) ? `int result = solution(${inputStr});` : `int result = solution(${inputStr});`}
+    printf("%d\\n", result);
+    return 0;
+}`;
+}
+
+// TypeScript test wrapper
+function createTypeScriptTestWrapper(userCode, testInput) {
+  const inputStr = Array.isArray(testInput) 
+    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ')
+    : typeof testInput === 'string' ? `"${testInput}"` : JSON.stringify(testInput);
+    
+  return `${userCode}
+
+// Test execution
+try {
+    ${Array.isArray(testInput) ? `const result = solution(${inputStr});` : `const result = solution(${inputStr});`}
+    console.log(result);
+} catch (error) {
+    console.log('Error:', error.message);
+}`;
+}
+
+// Helper function to parse actual output from execution
+function parseActualOutput(output, language) {
+  if (!output || typeof output !== 'string') {
+    return output;
+  }
+  
+  // Clean up output
+  const lines = output.split('\n').filter(line => line.trim());
+  if (lines.length === 0) return '';
+  
+  // Get the last meaningful line (usually the result)
+  const lastLine = lines[lines.length - 1].trim();
+  
+  // Try to parse as JSON for arrays/objects
+  try {
+    return JSON.parse(lastLine);
+  } catch {
+    // Try to parse as number
+    const num = Number(lastLine);
+    if (!isNaN(num)) return num;
+    
+    // Return as string
+    return lastLine;
+  }
+}
+
+// CRITICAL: Enhanced AI simulation with strict validation (DEPRECATED)
+async function runAISimulatedTest(code, language, testCase) {
+  const startTime = Date.now();
+  
+  try {
+    // Check for empty or trivial code first
+    const codeLines = code.trim().split('\n').filter(line => 
+      line.trim() && !line.trim().startsWith('//') && !line.trim().startsWith('#')
+    );
+    
+    if (codeLines.length === 0) {
+      return {
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'Empty Code',
+        passed: false,
+        description: testCase.description,
+        error: 'No implementation provided',
+        executionTime: Date.now() - startTime,
+        simulated: true
+      };
+    }
+
+    // Check for basic function structure
+    const hasFunction = code.includes('def ') || code.includes('function') || code.includes('public ') || code.includes('=>');
+    const hasReturn = code.includes('return');
+    const hasLogic = code.includes('for ') || code.includes('while ') || code.includes('if ') || 
+                    code.includes('=') || code.includes('+') || code.includes('-') || 
+                    code.includes('*') || code.includes('/');
+
+    if (!hasFunction) {
+      return {
+        input: testCase.input,
+        expected: testCase.expectedOutput,
+        actual: 'No Function Definition',
+        passed: false,
+        description: testCase.description,
+        error: 'No function definition found',
+        executionTime: Date.now() - startTime,
+        simulated: true
+      };
+    }
+
+    const prompt = `RECRUITMENT TEST - CRITICAL ANALYSIS REQUIRED
+
+Analyze this ${language} code for a technical interview:
+
+\`\`\`${language}
+${code}
+\`\`\`
+
+Test Case:
+Input: ${testCase.input}
+Expected Output: ${testCase.expectedOutput}
+
+STRICT REQUIREMENTS:
+1. IGNORE import statements (assume available)
+2. Trace through EVERY line of logic step by step
+3. Check if algorithm is ACTUALLY IMPLEMENTED (not just empty/placeholder)
+4. Verify the logic would produce EXACTLY the expected output
+5. Be extremely strict - this is for hiring decisions
+
+COMMON FAIL PATTERNS:
+- Empty function body (just pass/return/comments)  
+- Wrong algorithm completely
+- Missing critical logic steps
+- Off-by-one errors
+- Incorrect data structure usage
+
+RESPONSE FORMAT (EXACTLY):
+ANALYSIS: [step-by-step trace through the code]
+RESULT: PASS or FAIL  
+OUTPUT: [exact output the code would produce]
+CONFIDENCE: [HIGH/MEDIUM/LOW]`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4", // GPT-4 for critical recruitment accuracy
+      messages: [
+        { 
+          role: "system", 
+          content: "You are a senior software engineer conducting technical interviews. Be extremely precise and strict in code analysis. This determines hiring decisions." 
+        },
+        { role: "user", content: prompt }
+      ],
+      max_tokens: 400,
+      temperature: 0.0 // Zero temperature for consistency
+    });
+
+    const response = completion.choices[0].message.content;
+    
+    // Parse AI response strictly
+    const resultMatch = response.match(/RESULT:\s*(PASS|FAIL)/i);
+    const outputMatch = response.match(/OUTPUT:\s*(.+?)(?:\n|CONFIDENCE:)/i);
+    const analysisMatch = response.match(/ANALYSIS:\s*(.+?)(?:\n|RESULT:)/i);
+    const confidenceMatch = response.match(/CONFIDENCE:\s*(HIGH|MEDIUM|LOW)/i);
+
+    const passed = resultMatch && resultMatch[1].toUpperCase() === 'PASS';
+    const actualOutput = outputMatch ? outputMatch[1].trim() : (passed ? testCase.expectedOutput : 'Logic Error');
+    const analysis = analysisMatch ? analysisMatch[1].trim() : 'AI analysis completed';
+    const confidence = confidenceMatch ? confidenceMatch[1] : 'UNKNOWN';
+
+    // Additional validation - if confidence is LOW, automatically fail
+    const finalPassed = passed && confidence !== 'LOW';
+
+    return {
+      input: testCase.input,
+      expected: testCase.expectedOutput,
+      actual: actualOutput,
+      passed: finalPassed,
+      description: testCase.description,
+      error: null,
+      executionTime: Date.now() - startTime,
+      simulated: true,
+      aiAnalysis: analysis,
+      confidence: confidence
+    };
+
+  } catch (error) {
+    return {
+      input: testCase.input,
+      expected: testCase.expectedOutput,
+      actual: 'AI Analysis Failed',
+      passed: false,
+      description: testCase.description,
+      error: `AI simulation error: ${error.message}`,
+      executionTime: Date.now() - startTime,
+      simulated: true
+    };
+  }
+}
+
+// UTILITY: Production-grade input parsing
+function parseTestInput(inputString) {
+  try {
+    // Handle array format: "[1,2,3]"
+    if (inputString.startsWith('[') && inputString.endsWith(']')) {
+      return JSON.parse(inputString);
+    }
+    
+    // Handle string format: '"hello"'
+    if (inputString.startsWith('"') && inputString.endsWith('"')) {
+      return JSON.parse(inputString);
+    }
+    
+    // Handle multiple parameters: "5, 3" or "[1,2], 9"
+    if (inputString.includes(',')) {
+      return inputString.split(',').map(param => {
+        const trimmed = param.trim();
+        if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+          return JSON.parse(trimmed);
+        }
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          return JSON.parse(trimmed);
+        }
+        const num = Number(trimmed);
+        return isNaN(num) ? trimmed : num;
+      });
+    }
+    
+    // Single parameter
+    const num = Number(inputString);
+    return isNaN(num) ? inputString : num;
+  } catch (error) {
+    return inputString; // Fallback to original string
+  }
+}
+
+// UTILITY: Parse expected output with type handling
+function parseExpectedOutput(outputString) {
+  try {
+    // Handle JSON arrays and objects
+    if (outputString.startsWith('[') || outputString.startsWith('{')) {
+      return JSON.parse(outputString);
+    }
+    
+    // Handle strings
+    if (outputString.startsWith('"') && outputString.endsWith('"')) {
+      return JSON.parse(outputString);
+    }
+    
+    // Handle booleans
+    if (outputString === 'true') return true;
+    if (outputString === 'false') return false;
+    
+    // Handle numbers
+    const num = Number(outputString);
+    if (!isNaN(num)) return num;
+    
+    return outputString;
+  } catch (error) {
+    return outputString;
+  }
+}
+
+// CRITICAL: Rigorous output comparison for recruitment accuracy  
+function compareOutputsRigorous(actual, expected) {
+  // Exact equality check first
+  if (actual === expected) return true;
+  
+  // Type mismatch check
+  if (typeof actual !== typeof expected) return false;
+  
+  // Array comparison with order sensitivity
+  if (Array.isArray(actual) && Array.isArray(expected)) {
+    if (actual.length !== expected.length) return false;
+    return actual.every((item, index) => compareOutputsRigorous(item, expected[index]));
+  }
+  
+  // Object comparison with key-value matching
+  if (actual && expected && typeof actual === 'object' && typeof expected === 'object') {
+    const actualKeys = Object.keys(actual).sort();
+    const expectedKeys = Object.keys(expected).sort();
+    
+    if (actualKeys.length !== expectedKeys.length) return false;
+    if (!actualKeys.every(key => expectedKeys.includes(key))) return false;
+    
+    return actualKeys.every(key => compareOutputsRigorous(actual[key], expected[key]));
+  }
+  
+  // Number comparison with precision handling
+  if (typeof actual === 'number' && typeof expected === 'number') {
+    return Math.abs(actual - expected) < Number.EPSILON;
+  }
+  
+  // String comparison (case-sensitive for recruitment)
+  return String(actual).trim() === String(expected).trim();
+}
+
+// UTILITY: Format output for display
+function formatOutputForDisplay(output) {
+  if (output === null) return 'null';
+  if (output === undefined) return 'undefined';
+  if (typeof output === 'string') return output;
+  if (typeof output === 'object') return JSON.stringify(output);
+  return String(output);
 }
 
 // Helper function to analyze code submission
@@ -1126,7 +2014,11 @@ async function analyzeCodeSubmission(code, language, question) {
 
     // Run automatic test cases if available
     if (question.testCases && question.testCases.length > 0 && !executionResult?.error) {
-      const testResults = await runAutomaticTests(code, language, question.testCases);
+      // Use hidden tests for final analysis (includes both sample and hidden tests)
+      const testsToRun = question.hiddenTests && question.hiddenTests.length > 0 
+        ? [...(question.sampleTests || []), ...question.hiddenTests]
+        : question.testCases || [];
+      const testResults = await runAutomaticTests(code, language, testsToRun);
       analysis.testResults = testResults;
       analysis.testsPassed = testResults.filter(t => t.passed).length;
       analysis.totalTests = testResults.length;
@@ -1195,67 +2087,302 @@ async function analyzeCodeSubmission(code, language, question) {
 }
 
 // Helper function to execute code safely
-async function executeCode(code, language) {
+// Production-grade code execution engine for recruitment testing
+async function executeCode(code, language, silent = false) {
   const startTime = Date.now();
   
-  if (language === 'javascript') {
-    try {
-      let output = '';
-      let error = null;
-
-      const originalConsoleLog = console.log;
-      const logs = [];
-      
-      console.log = (...args) => {
-        logs.push(args.map(arg => 
-          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-        ).join(' '));
-      };
-
-      // Mock common imports that candidates might reference
-      const safeCode = `
-        // Mock typing module for Python-style code
-        if (typeof List === 'undefined') var List = Array;
-        if (typeof typing === 'undefined') var typing = {};
-        
-        ${code}
-      `;
-      
-      const result = eval(`
-        (function() {
-          ${safeCode}
-        })()
-      `);
-
-      console.log = originalConsoleLog;
-
-      output = logs.join('\n');
-      if (result !== undefined) {
-        output += (output ? '\n' : '') + `Return value: ${typeof result === 'object' ? JSON.stringify(result, null, 2) : result}`;
-      }
-      
-      const executionTime = Date.now() - startTime;
-
-      return {
-        output: output || 'Code executed successfully (no output)',
-        error,
-        executionTime
-      };
-
-    } catch (executionError) {
-      return {
-        output: '',
-        error: executionError.message,
-        executionTime: Date.now() - startTime
-      };
-    }
+  const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
+  if (language && jsLanguages.includes(language.toLowerCase())) {
+    return await executeJavaScriptCode(code, startTime, silent);
   } else {
-    // For other languages, simulate execution using AI
-    return await simulateCodeExecution(code, language, startTime);
+    // Use real execution for other languages
+    return await executeMultiLanguageCode(code, language, startTime, silent);
   }
 }
 
-// Helper function to simulate code execution for non-JavaScript languages
+// Secure JavaScript execution with proper function testing
+async function executeJavaScriptCode(code, startTime, silent = false) {
+  try {
+    const vm = require('vm');
+    let output = '';
+    let error = null;
+    const logs = [];
+    let functionName = null;
+    let executedFunction = null;
+
+    // Create secure VM context
+    const context = {
+      console: {
+        log: (...args) => {
+          const message = args.map(arg => 
+            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+          ).join(' ');
+          logs.push(message);
+          output += message + '\n';
+        },
+        error: (...args) => {
+          const message = 'ERROR: ' + args.join(' ');
+          logs.push(message);
+          output += message + '\n';
+        }
+      },
+      // Essential JavaScript globals
+      Array, Object, JSON, Math, String, Number, Boolean,
+      parseInt, parseFloat, isNaN, isFinite, Date,
+      // Mock common imports for testing
+      List: Array,
+      typing: {},
+      Set, Map, WeakMap, WeakSet,
+      // Security: disable dangerous globals
+      setTimeout: undefined,
+      setInterval: undefined,
+      require: undefined,
+      process: undefined,
+      global: undefined,
+      // Result capture
+      _functionName: null,
+      _capturedFunction: null
+    };
+
+    // Enhanced code wrapping for function detection and execution
+    const wrappedCode = `
+      try {
+        // Execute the user code
+        ${code}
+        
+        // Auto-detect functions
+        const userFunctions = [];
+        for (const key in this) {
+          if (typeof this[key] === 'function' && !key.startsWith('_') && key !== 'console') {
+            userFunctions.push(key);
+          }
+        }
+        
+        if (userFunctions.length > 0) {
+          this._functionName = userFunctions[0];
+          this._capturedFunction = this[userFunctions[0]];
+        }
+        
+      } catch (err) {
+        console.error('Execution error:', err.message);
+        throw err;
+      }
+    `;
+
+    // Execute in VM with timeout
+    vm.createContext(context);
+    vm.runInContext(wrappedCode, context, {
+      timeout: 10000, // 10 second timeout for safety
+      displayErrors: true
+    });
+
+    functionName = context._functionName;
+    executedFunction = context._capturedFunction;
+
+    // Only add success message if not in silent mode (for test execution)
+    if (functionName && !silent) {
+      output += `Function '${functionName}' defined successfully\n`;
+    }
+
+    const executionTime = Date.now() - startTime;
+
+    return {
+      output: silent ? '' : (output.trim() || 'Code executed successfully'),
+      error,
+      executionTime,
+      functionName,
+      capturedFunction: executedFunction,
+      logs
+    };
+
+  } catch (executionError) {
+    const executionTime = Date.now() - startTime;
+    return {
+      output: '',
+      error: executionError.message,
+      executionTime,
+      functionName: null,
+      capturedFunction: null,
+      logs: []
+    };
+  }
+}
+
+// Real multi-language code execution
+async function executeMultiLanguageCode(code, language, startTime, silent = false) {
+  const fs = require('fs');
+  const path = require('path');
+  const { exec } = require('child_process');
+  const { promisify } = require('util');
+  const execAsync = promisify(exec);
+  
+  try {
+    const tempDir = path.join(__dirname, '../../temp');
+    
+    // Create temp directory if it doesn't exist
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const timestamp = Date.now();
+    let fileName, command, output = '', error = null;
+    
+    switch (language.toLowerCase()) {
+      case 'python':
+      case 'py':
+        fileName = `temp_${timestamp}.py`;
+        const pythonFile = path.join(tempDir, fileName);
+        fs.writeFileSync(pythonFile, code);
+        command = `cd "${tempDir}" && python "${fileName}"`;
+        break;
+        
+      case 'java':
+        // Extract class name from code or use default
+        const classMatch = code.match(/class\s+(\w+)/);
+        const className = classMatch ? classMatch[1] : 'Solution';
+        fileName = `${className}.java`;
+        const javaFile = path.join(tempDir, fileName);
+        fs.writeFileSync(javaFile, code);
+        command = `cd "${tempDir}" && javac "${fileName}" && java "${className}"`;
+        break;
+        
+      case 'cpp':
+      case 'c++':
+        fileName = `temp_${timestamp}.cpp`;
+        const cppFile = path.join(tempDir, fileName);
+        fs.writeFileSync(cppFile, code);
+        const exeFile = `temp_${timestamp}.exe`;
+        command = `cd "${tempDir}" && g++ "${fileName}" -o "${exeFile}" && "${exeFile}"`;
+        break;
+        
+      case 'c':
+        fileName = `temp_${timestamp}.c`;
+        const cFile = path.join(tempDir, fileName);
+        fs.writeFileSync(cFile, code);
+        const cExeFile = `temp_${timestamp}.exe`;
+        command = `cd "${tempDir}" && gcc "${fileName}" -o "${cExeFile}" && "${cExeFile}"`;
+        break;
+        
+      case 'typescript':
+      case 'ts':
+        fileName = `temp_${timestamp}.ts`;
+        const tsFile = path.join(tempDir, fileName);
+        fs.writeFileSync(tsFile, code);
+        command = `cd "${tempDir}" && npx tsc "${fileName}" --outDir . && node "${fileName.replace('.ts', '.js')}"`;
+        break;
+        
+      default:
+        return {
+          output: '',
+          error: `Language '${language}' not supported for execution`,
+          executionTime: Date.now() - startTime,
+          simulated: false
+        };
+    }
+    
+    // Execute with timeout
+    const { stdout, stderr } = await execAsync(command, {
+      timeout: 10000, // 10 second timeout
+      maxBuffer: 1024 * 1024 // 1MB buffer
+    });
+    
+    output = stdout.trim();
+    if (stderr && stderr.trim()) {
+      // Check for common compiler/runtime not found errors
+      const stderrLower = stderr.toLowerCase();
+      if (stderrLower.includes('not recognized') || 
+          stderrLower.includes('command not found') ||
+          stderrLower.includes('no such file')) {
+        error = `${language} compiler/runtime not installed. Please install: ${getInstallationMessage(language)}`;
+      } else {
+        error = stderr.trim();
+      }
+    }
+    
+    // Cleanup temp files
+    try {
+      if (fs.existsSync(path.join(tempDir, fileName))) {
+        fs.unlinkSync(path.join(tempDir, fileName));
+      }
+      // Clean up compiled files
+      if (language.toLowerCase() === 'java') {
+        const classMatch = code.match(/class\s+(\w+)/);
+        const className = classMatch ? classMatch[1] : 'Solution';
+        const classFile = path.join(tempDir, `${className}.class`);
+        if (fs.existsSync(classFile)) {
+          fs.unlinkSync(classFile);
+        }
+      }
+      if (language.toLowerCase() === 'cpp' || language.toLowerCase() === 'c++' || language.toLowerCase() === 'c') {
+        const exeFile = path.join(tempDir, `temp_${timestamp}.exe`);
+        if (fs.existsSync(exeFile)) {
+          fs.unlinkSync(exeFile);
+        }
+      }
+      if (language.toLowerCase() === 'typescript' || language.toLowerCase() === 'ts') {
+        const jsFile = path.join(tempDir, fileName.replace('.ts', '.js'));
+        if (fs.existsSync(jsFile)) {
+          fs.unlinkSync(jsFile);
+        }
+      }
+    } catch (cleanupError) {
+      // Ignore cleanup errors
+    }
+    
+    const executionTime = Date.now() - startTime;
+    
+    if (!silent && output) {
+      output = `Code executed successfully\n${output}`;
+    }
+    
+    return {
+      output: output || (error ? '' : 'Code executed successfully'),
+      error,
+      executionTime,
+      simulated: false
+    };
+    
+  } catch (execError) {
+    const executionTime = Date.now() - startTime;
+    
+    // Check for common execution errors
+    let errorMessage = execError.message;
+    if (errorMessage.includes('not recognized') || 
+        errorMessage.includes('command not found')) {
+      errorMessage = `${language} compiler/runtime not installed. Please install: ${getInstallationMessage(language)}`;
+    }
+    
+    return {
+      output: '',
+      error: errorMessage,
+      executionTime,
+      simulated: false
+    };
+  }
+}
+
+// Helper function to provide installation messages
+function getInstallationMessage(language) {
+  switch (language.toLowerCase()) {
+    case 'python':
+    case 'py':
+      return 'Python from https://www.python.org/';
+    case 'java':
+      return 'Java JDK from https://www.oracle.com/java/';
+    case 'cpp':
+    case 'c++':
+      return 'C++ compiler (g++, Visual Studio, or MinGW)';
+    case 'c':
+      return 'C compiler (gcc, Visual Studio, or MinGW)';
+    case 'typescript':
+    case 'ts':
+      return 'Node.js and TypeScript (npm install -g typescript)';
+    default:
+      return `${language} compiler/runtime`;
+  }
+}
+
+// Helper function to simulate code execution for non-JavaScript languages (DEPRECATED - keeping for backward compatibility)
 async function simulateCodeExecution(code, language, startTime) {
   try {
     const languageSpecifics = getLanguageSpecifics(language);
@@ -1320,120 +2447,41 @@ async function simulateCodeExecution(code, language, startTime) {
 async function runAutomaticTests(code, language, testCases) {
   const results = [];
   
-  if (language === 'javascript') {
-    // For JavaScript, run actual tests
-    for (const testCase of testCases) {
-      try {
-        // Extract function name from code (simple regex)
-        const functionMatch = code.match(/function\s+(\w+)/);
-        const funcName = functionMatch ? functionMatch[1] : 'solution';
-        
-        // Create test execution code
-        // Create a safe test execution environment
-        const testCode = `
-          // Mock any missing imports that might be referenced
-          if (typeof List === 'undefined') global.List = Array;
-          if (typeof typing === 'undefined') global.typing = {};
-          
-          ${code}
-          
-          // Test execution
-          const result = ${funcName}(${testCase.input});
-          result;
-        `;
-        
-        const testResult = await executeCode(testCode, language);
-        const actualOutput = testResult.output ? testResult.output.split('Return value: ')[1]?.trim() : '';
-        const passed = actualOutput === testCase.expectedOutput || testResult.output.includes(testCase.expectedOutput);
-        
-        results.push({
-          input: testCase.input,
-          expectedOutput: testCase.expectedOutput,
-          actualOutput: actualOutput || testResult.output,
-          passed: passed && !testResult.error,
-          description: testCase.description,
-          error: testResult.error
-        });
-      } catch (error) {
-        results.push({
-          input: testCase.input,
-          expectedOutput: testCase.expectedOutput,
-          actualOutput: 'Error',
-          passed: false,
-          description: testCase.description,
-          error: error.message
-        });
+  // Support all languages with real execution
+  const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
+  
+  for (const testCase of testCases) {
+    try {
+      let result;
+      
+      if (jsLanguages.includes(language.toLowerCase())) {
+        // JavaScript - use VM-based execution
+        result = await runJavaScriptTest(code, testCase);
+      } else {
+        // Other languages - use system execution
+        result = await runMultiLanguageTest(code, language, testCase);
       }
-    }
-  } else {
-    // For other languages, use AI to simulate test results
-    for (const testCase of testCases) {
-      try {
-        const prompt = `Analyze this ${language} code and predict the exact output for the test case:
-        
-        Code:
-        \`\`\`${language}
-        ${code}
-        \`\`\`
-        
-        Test Case: 
-        - Input: ${testCase.input}
-        - Expected Output: ${testCase.expectedOutput}
-        - Description: ${testCase.description}
-        
-        IMPORTANT: 
-        - Trace through the code step by step
-        - Predict the EXACT output value the function would return
-        - Ignore any missing imports (assume all are available)
-        
-        Return ONLY valid JSON in this exact format:
-        {"passed": true/false, "actualOutput": "exact_predicted_value", "reasoning": "brief explanation"}`;
-
-        const completion = await openai.chat.completions.create({
-          model: "gpt-3.5-turbo",
-          messages: [
-            { role: "system", content: `You are a ${language} code simulator. Predict exact outputs by tracing code execution. Always return valid JSON only.` },
-            { role: "user", content: prompt }
-          ],
-          max_tokens: 300,
-          temperature: 0.1,
-        });
-
-        let testAnalysis;
-        try {
-          const response = completion.choices[0].message.content.trim();
-          // Clean up any markdown or extra text
-          const jsonMatch = response.match(/\{[\s\S]*\}/);
-          const jsonStr = jsonMatch ? jsonMatch[0] : response;
-          testAnalysis = JSON.parse(jsonStr);
-        } catch (jsonError) {
-          console.log('JSON parsing failed for test analysis:', completion.choices[0].message.content);
-          // Create a fallback response
-          testAnalysis = {
-            passed: false,
-            actualOutput: 'Simulation failed',
-            reasoning: 'Unable to simulate test execution'
-          };
-        }
-        
-        results.push({
-          input: testCase.input,
-          expectedOutput: testCase.expectedOutput,
-          actualOutput: testAnalysis.actualOutput,
-          passed: testAnalysis.passed,
-          description: testCase.description,
-          reasoning: testAnalysis.reasoning
-        });
-      } catch (error) {
-        results.push({
-          input: testCase.input,
-          expectedOutput: testCase.expectedOutput,
-          actualOutput: 'Unknown',
-          passed: false,
-          description: testCase.description,
-          error: 'Test simulation failed'
-        });
-      }
+      
+      results.push({
+        input: testCase.input,
+        expectedOutput: testCase.expectedOutput,
+        actualOutput: result.actual,
+        passed: result.passed,
+        description: testCase.description,
+        error: result.error,
+        executionTime: result.executionTime
+      });
+      
+    } catch (error) {
+      results.push({
+        input: testCase.input,
+        expectedOutput: testCase.expectedOutput,
+        actualOutput: 'Execution Error',
+        passed: false,
+        description: testCase.description,
+        error: error.message,
+        executionTime: 0
+      });
     }
   }
   

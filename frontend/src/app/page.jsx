@@ -1,5 +1,5 @@
-import MainEditor from '@/components/MainEditor';
+import AITestInterface from '@/components/AITestInterface';
 
 export default function Home() {
-  return <MainEditor />;
+  return <AITestInterface />;
 }

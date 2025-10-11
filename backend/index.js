@@ -16,7 +16,6 @@ app.use(cors());
 app.use(express.json());
 
 // Routes
-app.use('/api/chat', require('./routes/chat'));
 app.use('/api/code', require('./routes/code'));
 app.use('/api/test', require('./routes/test'));
 

@@ -296,15 +296,20 @@ export default function AITestInterface() {
             </div>
             
             <div className="bg-blue-50 p-4 rounded-lg">
-              <h3 className="font-semibold text-blue-900 mb-2">Test Instructions:</h3>
+              <h3 className="font-semibold text-blue-900 mb-2">LeetCode-Style Coding Test:</h3>
               <ul className="text-sm text-blue-800 space-y-1">
-                <li>• You have 5 minutes per question (2 questions total)</li>
-                <li>• <strong>Run Code:</strong> Test your solution with sample cases to debug</li>
-                <li>• <strong>Submit Code:</strong> Final submission with full analysis and hidden test cases</li>
-                <li>• All necessary imports/libraries are already available</li>
-                <li>• If time expires on a question, you'll automatically move to the next</li>
-                <li>• You can test multiple times before submitting</li>
+                <li>• <strong>5 minutes per question</strong> (2 questions total)</li>
+                <li>• <strong>Run Code:</strong> Test with sample cases (visible inputs/outputs)</li>
+                <li>• <strong>Submit Code:</strong> Final evaluation with hidden test cases</li>
+                <li>• <strong>Sample tests:</strong> Help you debug and validate your logic</li>
+                <li>• <strong>Hidden tests:</strong> Cover edge cases for final scoring</li>
+                <li>• All imports/libraries are pre-available (no imports needed)</li>
+                <li>• Auto-advance if time expires on a question</li>
               </ul>
+              <div className="mt-3 p-2 bg-blue-100 rounded text-xs">
+                <strong>💡 Tip:</strong> Use "Run Code" frequently to test your solution with sample cases, 
+                then "Submit Code" when you're confident it handles all scenarios.
+              </div>
             </div>
             
             <button
@@ -463,36 +468,96 @@ export default function AITestInterface() {
                           
                           {sampleTestResults.sampleTests && sampleTestResults.sampleTests.length > 0 && (
                             <div>
-                              <p className="text-sm font-medium text-gray-700 mb-2">
-                                Sample Tests: {sampleTestResults.sampleTests.filter(t => t.passed).length}/{sampleTestResults.sampleTests.length} passed
-                              </p>
-                              <div className="space-y-2">
-                                {sampleTestResults.sampleTests.map((test, idx) => (
-                                  <div key={idx} className={`flex items-center space-x-2 p-2 rounded text-sm ${
-                                    test.passed ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                              <div className="flex items-center justify-between mb-3">
+                                <p className="text-sm font-medium text-gray-700">
+                                  Sample Test Cases
+                                </p>
+                                <div className="flex items-center space-x-2">
+                                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                    sampleTestResults.sampleTests.every(t => t.passed) 
+                                      ? 'bg-green-100 text-green-800' 
+                                      : sampleTestResults.sampleTests.some(t => t.passed)
+                                      ? 'bg-yellow-100 text-yellow-800'
+                                      : 'bg-red-100 text-red-800'
                                   }`}>
-                                    {test.passed ? (
-                                      <CheckCircle className="h-4 w-4" />
-                                    ) : (
-                                      <AlertCircle className="h-4 w-4" />
-                                    )}
-                                    <span className="font-mono">Input: {test.input}</span>
-                                    <span>→</span>
-                                    <span className="font-mono">Expected: {test.expected}</span>
-                                    {!test.passed && test.actual !== undefined && (
-                                      <>
-                                        <span>→</span>
-                                        <span className="font-mono">Got: {test.actual}</span>
-                                      </>
-                                    )}
+                                    {sampleTestResults.sampleTests.filter(t => t.passed).length}/{sampleTestResults.sampleTests.length} passed
+                                  </span>
+                                  {sampleTestResults.sampleTests.some(t => t.simulated) && (
+                                    <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs">
+                                      AI Simulated
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="space-y-3">
+                                {sampleTestResults.sampleTests.map((test, idx) => (
+                                  <div key={idx} className="border rounded-lg p-3">
+                                    <div className="flex items-start justify-between mb-2">
+                                      <span className="text-xs font-medium text-gray-500">
+                                        Test Case {idx + 1}
+                                      </span>
+                                      <div className={`flex items-center space-x-1 px-2 py-1 rounded text-xs font-medium ${
+                                        test.passed 
+                                          ? 'bg-green-100 text-green-700' 
+                                          : 'bg-red-100 text-red-700'
+                                      }`}>
+                                        {test.passed ? (
+                                          <CheckCircle className="h-3 w-3" />
+                                        ) : (
+                                          <AlertCircle className="h-3 w-3" />
+                                        )}
+                                        <span>{test.passed ? 'PASS' : 'FAIL'}</span>
+                                      </div>
+                                    </div>
+                                    
+                                    <div className="space-y-2 text-sm">
+                                      <div>
+                                        <span className="font-medium text-gray-600">Input:</span>
+                                        <div className="font-mono bg-gray-50 p-2 rounded mt-1 text-gray-800">
+                                          {test.input}
+                                        </div>
+                                      </div>
+                                      
+                                      <div>
+                                        <span className="font-medium text-gray-600">Expected:</span>
+                                        <div className="font-mono bg-green-50 p-2 rounded mt-1 text-green-800">
+                                          {test.expected}
+                                        </div>
+                                      </div>
+                                      
+                                      {!test.passed && test.actual && (
+                                        <div>
+                                          <span className="font-medium text-gray-600">Your Output:</span>
+                                          <div className="font-mono bg-red-50 p-2 rounded mt-1 text-red-800">
+                                            {test.actual}
+                                          </div>
+                                        </div>
+                                      )}
+                                      
+                                      {test.description && (
+                                        <div className="text-xs text-gray-500 italic">
+                                          {test.description}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 ))}
                               </div>
                             </div>
                           )}
                           
-                          <div className="text-xs text-gray-500 italic">
-                            ℹ️ These are sample tests. Additional hidden tests will be used for final evaluation.
+                          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                            <div className="flex items-start space-x-2">
+                              <AlertCircle className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
+                              <div className="text-sm">
+                                <p className="font-medium text-blue-900 mb-1">About Test Cases</p>
+                                <p className="text-blue-800">
+                                  These are <strong>sample test cases</strong> to help you debug your solution. 
+                                  When you submit, your code will be tested against additional hidden test cases 
+                                  that cover edge cases and various scenarios.
+                                </p>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}
