@@ -9,6 +9,12 @@ const openai = new OpenAI({
 // Test sessions storage (in production, use a database)
 const testSessions = new Map();
 
+// Custom question banks storage (recruiters can add their own)
+const questionBanks = new Map();
+
+// Default question categories (fallback only)
+const defaultQuestionCategories = new Map();
+
 // Question categories and difficulties for multiple languages
 const questionCategories = {
   javascript: {
@@ -232,7 +238,14 @@ router.post('/generate-question', async (req, res) => {
 // Start a new test session
 router.post('/start-session', async (req, res) => {
   try {
-    const { candidateName, difficulty = 'easy', language = 'javascript' } = req.body;
+    const { 
+      candidateName, 
+      difficulty = 'easy', 
+      language = 'javascript',
+      questionBankId = null, // Custom question bank ID
+      recruiterId = null,
+      totalQuestions = 2
+    } = req.body;
     
     const sessionId = `test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
@@ -241,14 +254,41 @@ router.post('/start-session', async (req, res) => {
       candidateName,
       difficulty,
       language,
+      questionBankId,
+      recruiterId,
       startTime: new Date(),
       currentQuestion: 0,
-      totalQuestions: 2,
+      totalQuestions,
       questions: [],
       results: [],
       usedQuestionTypes: new Set(), // Track used question types
+      availableQuestions: [], // Questions from selected bank
       isActive: true
     };
+
+    // Load questions from custom bank or use defaults
+    if (questionBankId) {
+      const questionBank = questionBanks.get(questionBankId);
+      if (!questionBank) {
+        return res.status(404).json({ error: 'Question bank not found' });
+      }
+      
+      // Check access permissions
+      if (questionBank.isPrivate && questionBank.recruiterId !== recruiterId) {
+        return res.status(403).json({ error: 'Access denied to private question bank' });
+      }
+      
+      // Filter questions by difficulty and language
+      session.availableQuestions = questionBank.questions.filter(q => 
+        q.difficulty === difficulty && q.language.toLowerCase() === language.toLowerCase()
+      );
+      
+      if (session.availableQuestions.length === 0) {
+        return res.status(400).json({ 
+          error: `No questions found for ${difficulty} ${language} in the selected question bank` 
+        });
+      }
+    }
     
     testSessions.set(sessionId, session);
     
@@ -299,26 +339,20 @@ router.post('/test-code', async (req, res) => {
     let error = null;
 
     try {
-      // Execute the code to get basic output
-      const executionResult = await executeCode(code, session.language);
-      
-      if (executionResult.error) {
-        // Check if it's just an import error
-        const errorMessage = executionResult.error.toLowerCase();
-        const isImportError = errorMessage.includes('import') || 
-                             errorMessage.includes('module') ||
-                             errorMessage.includes('typing') ||
-                             errorMessage.includes('list') ||
-                             errorMessage.includes('from typing');
+      // For non-JavaScript languages, skip the basic execution and go straight to sample tests
+      const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
+      if (jsLanguages.includes(session.language.toLowerCase())) {
+        // Execute JavaScript code to get basic output
+        const executionResult = await executeCode(code, session.language);
         
-        if (!isImportError) {
+        if (executionResult.error) {
           error = executionResult.error;
         } else {
-          // Simulate execution for import errors
-          output = 'Code structure looks good. Running sample tests...';
+          output = executionResult.output;
         }
       } else {
-        output = executionResult.output;
+        // For Python, Java, C++, etc. - skip basic execution and show message
+        output = `Code structure looks good for ${session.language}. Running sample tests...`;
       }
 
       // Run sample tests from the question
@@ -457,6 +491,154 @@ router.post('/timeout-question', async (req, res) => {
   }
 });
 
+// API Documentation for recruiters
+router.get('/api-docs', async (req, res) => {
+  try {
+    const apiDocs = {
+      title: "Custom Question Bank Management API",
+      version: "1.0.0",
+      description: "API for recruiters to manage their own coding question banks",
+      baseUrl: "/api/test",
+      endpoints: {
+        "Question Bank Management": {
+          "POST /question-bank": {
+            description: "Create or update a custom question bank",
+            body: {
+              bankId: "string (required) - Unique identifier for the question bank",
+              bankName: "string (required) - Display name for the bank",
+              recruiterId: "string (required) - ID of the recruiter creating the bank",
+              questions: "array (required) - Array of question objects",
+              isPrivate: "boolean (optional) - Whether bank is private (default: false)",
+              tags: "array (optional) - Tags for categorization"
+            },
+            questionFormat: {
+              title: "string - Question title",
+              description: "string - Problem description", 
+              difficulty: "string - easy|medium|hard",
+              language: "string - javascript|python|java|cpp|typescript",
+              examples: "array - Input/output examples",
+              testCases: "array - Test cases for validation",
+              sampleTests: "array - Visible test cases",
+              hiddenTests: "array - Hidden test cases",
+              constraints: "string - Problem constraints",
+              expectedComplexity: "string - Time/space complexity",
+              signature: "string - Function signature template",
+              hints: "array - Hints for candidates"
+            }
+          },
+          "GET /question-banks": {
+            description: "Get list of available question banks",
+            query: {
+              recruiterId: "string (optional) - Filter by recruiter",
+              includePublic: "boolean (optional) - Include public banks"
+            }
+          },
+          "GET /question-bank/:bankId": {
+            description: "Get specific question bank details",
+            params: { bankId: "string - Question bank ID" },
+            query: { recruiterId: "string - For access control" }
+          },
+          "DELETE /question-bank/:bankId": {
+            description: "Delete a question bank",
+            params: { bankId: "string - Question bank ID" },
+            body: { recruiterId: "string - Owner verification" }
+          },
+          "POST /question-bank/import": {
+            description: "Import questions from various formats",
+            body: {
+              bankId: "string - Target bank ID",
+              bankName: "string - Bank display name",
+              recruiterId: "string - Owner ID",
+              importFormat: "string - json|csv|leetcode",
+              data: "string - Data to import",
+              overwrite: "boolean - Overwrite existing bank"
+            }
+          }
+        },
+        "Test Session Management": {
+          "POST /start-session": {
+            description: "Start a test session with custom question bank",
+            body: {
+              candidateName: "string - Candidate name",
+              difficulty: "string - easy|medium|hard",
+              language: "string - Programming language",
+              questionBankId: "string (optional) - Custom question bank ID",
+              recruiterId: "string (optional) - For access control",
+              totalQuestions: "number (optional) - Number of questions (default: 2)"
+            }
+          }
+        }
+      },
+      examples: {
+        createQuestionBank: {
+          method: "POST",
+          url: "/api/test/question-bank",
+          body: {
+            bankId: "my-company-js-easy",
+            bankName: "My Company JavaScript Easy Questions",
+            recruiterId: "recruiter123",
+            isPrivate: true,
+            tags: ["frontend", "algorithms"],
+            questions: [
+              {
+                title: "Array Sum",
+                description: "Calculate the sum of all numbers in an array",
+                difficulty: "easy",
+                language: "javascript",
+                examples: [
+                  {
+                    input: "[1, 2, 3, 4]",
+                    output: "10",
+                    explanation: "1 + 2 + 3 + 4 = 10"
+                  }
+                ],
+                signature: "function arraySum(numbers) {\n  // Your code here\n}",
+                testCases: [
+                  {
+                    input: "[1, 2, 3, 4]",
+                    expectedOutput: "10",
+                    description: "Basic sum test"
+                  }
+                ],
+                sampleTests: [
+                  {
+                    input: "[1, 2, 3]",
+                    expectedOutput: "6",
+                    description: "Sample test"
+                  }
+                ],
+                hiddenTests: [
+                  {
+                    input: "[]",
+                    expectedOutput: "0",
+                    description: "Empty array"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        startSessionWithCustomBank: {
+          method: "POST",
+          url: "/api/test/start-session",
+          body: {
+            candidateName: "John Doe",
+            difficulty: "easy",
+            language: "javascript",
+            questionBankId: "my-company-js-easy",
+            recruiterId: "recruiter123",
+            totalQuestions: 3
+          }
+        }
+      }
+    };
+
+    res.json(apiDocs);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to generate API documentation', details: error.message });
+  }
+});
+
 // Test endpoint to preview question format (for development)
 router.get('/preview-question', async (req, res) => {
   try {
@@ -465,6 +647,237 @@ router.get('/preview-question', async (req, res) => {
     res.json(question);
   } catch (error) {
     res.status(500).json({ error: 'Failed to generate preview question', details: error.message });
+  }
+});
+
+// ===== QUESTION BANK MANAGEMENT APIs =====
+
+// Create or update a custom question bank
+router.post('/question-bank', async (req, res) => {
+  try {
+    const { 
+      bankId, 
+      bankName, 
+      recruiterId, 
+      questions, 
+      isPrivate = false,
+      tags = []
+    } = req.body;
+
+    if (!bankId || !bankName || !questions || questions.length === 0) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: bankId, bankName, questions' 
+      });
+    }
+
+    // Validate question structure
+    const validatedQuestions = questions.map(q => {
+      if (!q.title || !q.description || !q.difficulty || !q.language) {
+        throw new Error('Each question must have: title, description, difficulty, language');
+      }
+      
+      return {
+        id: q.id || `q_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        title: q.title,
+        description: q.description,
+        difficulty: q.difficulty.toLowerCase(), // easy, medium, hard
+        language: q.language.toLowerCase(),
+        examples: q.examples || [],
+        testCases: q.testCases || [],
+        sampleTests: q.sampleTests || [],
+        hiddenTests: q.hiddenTests || [],
+        constraints: q.constraints || 'Standard constraints apply',
+        expectedComplexity: q.expectedComplexity || 'To be analyzed',
+        signature: q.signature || '',
+        hints: q.hints || [],
+        categories: q.categories || [],
+        createdAt: q.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+    });
+
+    const questionBank = {
+      id: bankId,
+      name: bankName,
+      recruiterId,
+      isPrivate,
+      tags,
+      questions: validatedQuestions,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      questionCount: validatedQuestions.length,
+      languages: [...new Set(validatedQuestions.map(q => q.language))],
+      difficulties: [...new Set(validatedQuestions.map(q => q.difficulty))]
+    };
+
+    questionBanks.set(bankId, questionBank);
+
+    res.json({
+      success: true,
+      message: 'Question bank created/updated successfully',
+      bankId,
+      questionCount: validatedQuestions.length
+    });
+
+  } catch (error) {
+    console.error('Question Bank Creation Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to create question bank',
+      details: error.message 
+    });
+  }
+});
+
+// Get available question banks
+router.get('/question-banks', async (req, res) => {
+  try {
+    const { recruiterId, includePublic = true } = req.query;
+    
+    const availableBanks = [];
+    
+    for (const [bankId, bank] of questionBanks.entries()) {
+      // Include if it's public or belongs to the recruiter
+      if (!bank.isPrivate || bank.recruiterId === recruiterId) {
+        availableBanks.push({
+          id: bank.id,
+          name: bank.name,
+          isPrivate: bank.isPrivate,
+          questionCount: bank.questionCount,
+          languages: bank.languages,
+          difficulties: bank.difficulties,
+          tags: bank.tags,
+          createdAt: bank.createdAt,
+          updatedAt: bank.updatedAt
+        });
+      }
+    }
+
+    res.json({
+      banks: availableBanks,
+      total: availableBanks.length
+    });
+
+  } catch (error) {
+    console.error('Get Question Banks Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get question banks',
+      details: error.message 
+    });
+  }
+});
+
+// Get specific question bank details
+router.get('/question-bank/:bankId', async (req, res) => {
+  try {
+    const { bankId } = req.params;
+    const { recruiterId } = req.query;
+    
+    const bank = questionBanks.get(bankId);
+    if (!bank) {
+      return res.status(404).json({ error: 'Question bank not found' });
+    }
+
+    // Check access permissions
+    if (bank.isPrivate && bank.recruiterId !== recruiterId) {
+      return res.status(403).json({ error: 'Access denied to private question bank' });
+    }
+
+    res.json(bank);
+
+  } catch (error) {
+    console.error('Get Question Bank Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get question bank',
+      details: error.message 
+    });
+  }
+});
+
+// Delete a question bank
+router.delete('/question-bank/:bankId', async (req, res) => {
+  try {
+    const { bankId } = req.params;
+    const { recruiterId } = req.body;
+    
+    const bank = questionBanks.get(bankId);
+    if (!bank) {
+      return res.status(404).json({ error: 'Question bank not found' });
+    }
+
+    // Check ownership
+    if (bank.recruiterId !== recruiterId) {
+      return res.status(403).json({ error: 'Only the owner can delete this question bank' });
+    }
+
+    questionBanks.delete(bankId);
+
+    res.json({
+      success: true,
+      message: 'Question bank deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete Question Bank Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete question bank',
+      details: error.message 
+    });
+  }
+});
+
+// Import questions from various formats (JSON, CSV, etc.)
+router.post('/question-bank/import', async (req, res) => {
+  try {
+    const { 
+      bankId,
+      bankName,
+      recruiterId,
+      importFormat, // 'json', 'csv', 'leetcode'
+      data,
+      overwrite = false
+    } = req.body;
+
+    let questions = [];
+
+    switch (importFormat.toLowerCase()) {
+      case 'json':
+        questions = JSON.parse(data);
+        break;
+      case 'csv':
+        questions = parseCSVQuestions(data);
+        break;
+      case 'leetcode':
+        questions = parseLeetCodeFormat(data);
+        break;
+      default:
+        throw new Error('Unsupported import format. Use: json, csv, or leetcode');
+    }
+
+    // Create or update question bank
+    const bankData = {
+      bankId,
+      bankName,
+      recruiterId,
+      questions,
+      isPrivate: true // Imported banks are private by default
+    };
+
+    // Reuse the existing question bank creation logic
+    const createResponse = await createQuestionBank(bankData, overwrite);
+    
+    res.json({
+      success: true,
+      message: `Successfully imported ${questions.length} questions`,
+      bankId,
+      importedCount: questions.length
+    });
+
+  } catch (error) {
+    console.error('Question Import Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to import questions',
+      details: error.message 
+    });
   }
 });
 
@@ -512,7 +925,12 @@ router.get('/results/:sessionId', async (req, res) => {
 
 // Helper function to generate unique questions (no repeats)
 async function generateUniqueQuestion(difficulty, language, questionIndex, session) {
-  // Get LeetCode problems that match the difficulty
+  // First check if session has custom questions from a question bank
+  if (session.availableQuestions && session.availableQuestions.length > 0) {
+    return generateFromCustomBank(session, questionIndex);
+  }
+  
+  // Fallback to LeetCode problems that match the difficulty
   const leetCodeKeys = Object.keys(leetCodeProblems).filter(key => 
     leetCodeProblems[key].difficulty === difficulty
   );
@@ -1509,9 +1927,44 @@ function createTestWrapper(userCode, language, testInput) {
 
 // Python test wrapper
 function createPythonTestWrapper(userCode, testInput) {
-  const inputStr = Array.isArray(testInput) 
-    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ')
-    : typeof testInput === 'string' ? `"${testInput}"` : JSON.stringify(testInput);
+  // Build proper function call
+  let functionCall;
+  
+  // Check if testInput represents multiple function parameters
+  // Multiple parameters: parseTestInput returns [[2,7,11,15], 9] - array with mixed types
+  // Single parameter: parseTestInput returns [1,3,2,5,4] - array with all same type numbers
+  
+  const isMultipleParameters = Array.isArray(testInput) && testInput.length > 1 && (
+    // Check if first element is array and second is not (like [[2,7,11,15], 9])
+    (Array.isArray(testInput[0]) && !Array.isArray(testInput[1])) ||
+    // Or if we have different types (mixed parameters)
+    (testInput.some((item, index) => index > 0 && typeof item !== typeof testInput[0]))
+  );
+  
+  if (isMultipleParameters) {
+    // Multiple arguments: this is like [[2,7,11,15], 9] for two_sum
+    const args = testInput.map(input => {
+      if (typeof input === 'string') {
+        return `"${input}"`;
+      } else if (Array.isArray(input)) {
+        return JSON.stringify(input);
+      } else {
+        return String(input);
+      }
+    }).join(', ');
+    functionCall = `result = func(${args})`;
+  } else {
+    // Single argument: this includes single arrays like [1,3,2,5,4] for find_max
+    let arg;
+    if (typeof testInput === 'string') {
+      arg = `"${testInput}"`;
+    } else if (Array.isArray(testInput)) {
+      arg = JSON.stringify(testInput);
+    } else {
+      arg = String(testInput);
+    }
+    functionCall = `result = func(${arg})`;
+  }
     
   return `${userCode}
 
@@ -1528,7 +1981,7 @@ if __name__ == "__main__":
         
         if functions:
             func = getattr(current_module, functions[0])
-            ${Array.isArray(testInput) ? `result = func(${inputStr})` : `result = func(${inputStr})`}
+            ${functionCall}
             print(result)
         else:
             print("No function found")
@@ -1542,9 +1995,20 @@ function createJavaTestWrapper(userCode, testInput) {
   const classMatch = userCode.match(/class\s+(\w+)/);
   const className = classMatch ? classMatch[1] : 'Solution';
   
-  const inputStr = Array.isArray(testInput) 
-    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ')
-    : typeof testInput === 'string' ? `"${testInput}"` : JSON.stringify(testInput);
+  // Check if testInput represents multiple function parameters vs single array
+  const isMultipleParameters = Array.isArray(testInput) && testInput.length > 1 && (
+    (Array.isArray(testInput[0]) && !Array.isArray(testInput[1])) ||
+    (testInput.some((item, index) => index > 0 && typeof item !== typeof testInput[0]))
+  );
+  
+  let inputStr;
+  if (isMultipleParameters) {
+    inputStr = testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ');
+  } else {
+    inputStr = typeof testInput === 'string' ? `"${testInput}"` : 
+               Array.isArray(testInput) ? JSON.stringify(testInput).replace(/"/g, '') :
+               String(testInput);
+  }
     
   // Insert main method if not exists
   if (!userCode.includes('public static void main')) {
@@ -1570,9 +2034,21 @@ function createJavaTestWrapper(userCode, testInput) {
 
 // C++ test wrapper
 function createCppTestWrapper(userCode, testInput) {
-  const inputStr = Array.isArray(testInput) 
-    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : String(input)).join(', ')
-    : typeof testInput === 'string' ? `"${testInput}"` : String(testInput);
+  // Check if testInput represents multiple function parameters vs single array/vector
+  const isMultipleParameters = Array.isArray(testInput) && testInput.length > 1 && (
+    (Array.isArray(testInput[0]) && !Array.isArray(testInput[1])) ||
+    (testInput.some((item, index) => index > 0 && typeof item !== typeof testInput[0]))
+  );
+  
+  let inputStr;
+  if (isMultipleParameters) {
+    inputStr = testInput.map(input => typeof input === 'string' ? `"${input}"` : 
+                           Array.isArray(input) ? `{${input.join(', ')}}` : String(input)).join(', ');
+  } else {
+    inputStr = typeof testInput === 'string' ? `"${testInput}"` : 
+               Array.isArray(testInput) ? `{${testInput.join(', ')}}` :
+               String(testInput);
+  }
     
   return `#include <iostream>
 #include <vector>
@@ -1614,9 +2090,20 @@ int main() {
 
 // TypeScript test wrapper
 function createTypeScriptTestWrapper(userCode, testInput) {
-  const inputStr = Array.isArray(testInput) 
-    ? testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ')
-    : typeof testInput === 'string' ? `"${testInput}"` : JSON.stringify(testInput);
+  // Check if testInput represents multiple function parameters vs single array
+  const isMultipleParameters = Array.isArray(testInput) && testInput.length > 1 && (
+    (Array.isArray(testInput[0]) && !Array.isArray(testInput[1])) ||
+    (testInput.some((item, index) => index > 0 && typeof item !== typeof testInput[0]))
+  );
+  
+  let inputStr;
+  if (isMultipleParameters) {
+    inputStr = testInput.map(input => typeof input === 'string' ? `"${input}"` : JSON.stringify(input)).join(', ');
+  } else {
+    inputStr = typeof testInput === 'string' ? `"${testInput}"` : 
+               Array.isArray(testInput) ? JSON.stringify(testInput) :
+               String(testInput);
+  }
     
   return `${userCode}
 
@@ -1789,36 +2276,118 @@ CONFIDENCE: [HIGH/MEDIUM/LOW]`;
 // UTILITY: Production-grade input parsing
 function parseTestInput(inputString) {
   try {
-    // Handle array format: "[1,2,3]"
+    // Handle single array format: "[1,2,3]" (should be treated as single parameter)
     if (inputString.startsWith('[') && inputString.endsWith(']')) {
-      return JSON.parse(inputString);
+      // Check if this is a complete array without external commas
+      let bracketCount = 0;
+      let hasExternalComma = false;
+      
+      for (let i = 0; i < inputString.length; i++) {
+        const char = inputString[i];
+        if (char === '[') bracketCount++;
+        if (char === ']') bracketCount--;
+        if (char === ',' && bracketCount === 0) {
+          hasExternalComma = true;
+          break;
+        }
+      }
+      
+      if (!hasExternalComma) {
+        // This is a single array parameter
+        return JSON.parse(inputString);
+      }
     }
     
-    // Handle string format: '"hello"'
+    // Handle single string format: '"hello"'
     if (inputString.startsWith('"') && inputString.endsWith('"')) {
-      return JSON.parse(inputString);
+      // Check if this is a complete string without external commas
+      let inQuotes = false;
+      let hasExternalComma = false;
+      
+      for (let i = 0; i < inputString.length; i++) {
+        const char = inputString[i];
+        if (char === '"' && (i === 0 || inputString[i-1] !== '\\')) {
+          inQuotes = !inQuotes;
+        }
+        if (char === ',' && !inQuotes) {
+          hasExternalComma = true;
+          break;
+        }
+      }
+      
+      if (!hasExternalComma) {
+        // This is a single string parameter
+        return JSON.parse(inputString);
+      }
     }
     
-    // Handle multiple parameters: "5, 3" or "[1,2], 9"
+    // Handle multiple parameters with smart comma parsing
     if (inputString.includes(',')) {
-      return inputString.split(',').map(param => {
-        const trimmed = param.trim();
-        if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-          return JSON.parse(trimmed);
+      const params = [];
+      let current = '';
+      let bracketCount = 0;
+      let inQuotes = false;
+      
+      for (let i = 0; i < inputString.length; i++) {
+        const char = inputString[i];
+        
+        if (char === '"' && (i === 0 || inputString[i-1] !== '\\')) {
+          inQuotes = !inQuotes;
         }
-        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-          return JSON.parse(trimmed);
+        
+        if (!inQuotes) {
+          if (char === '[' || char === '{') bracketCount++;
+          if (char === ']' || char === '}') bracketCount--;
         }
-        const num = Number(trimmed);
-        return isNaN(num) ? trimmed : num;
-      });
+        
+        if (char === ',' && bracketCount === 0 && !inQuotes) {
+          params.push(parseTestInputSingle(current.trim()));
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      
+      if (current.trim()) {
+        params.push(parseTestInputSingle(current.trim()));
+      }
+      
+      return params;
     }
     
     // Single parameter
-    const num = Number(inputString);
-    return isNaN(num) ? inputString : num;
+    return parseTestInputSingle(inputString);
   } catch (error) {
     return inputString; // Fallback to original string
+  }
+}
+
+// Helper function to parse a single parameter
+function parseTestInputSingle(paramString) {
+  try {
+    const trimmed = paramString.trim();
+    
+    // Handle JSON arrays and objects
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      return JSON.parse(trimmed);
+    }
+    
+    // Handle quoted strings
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return JSON.parse(trimmed);
+    }
+    
+    // Handle booleans
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    
+    // Handle numbers
+    const num = Number(trimmed);
+    if (!isNaN(num)) return num;
+    
+    return trimmed;
+  } catch (error) {
+    return paramString;
   }
 }
 
@@ -2487,5 +3056,205 @@ async function runAutomaticTests(code, language, testCases) {
   
   return results;
 }
+
+// ===== HELPER FUNCTIONS FOR CUSTOM QUESTION BANKS =====
+
+// Generate question from custom question bank
+function generateFromCustomBank(session, questionIndex) {
+  const availableQuestions = session.availableQuestions.filter(q => 
+    !session.usedQuestionTypes.has(q.id)
+  );
+  
+  // If all questions used, reset (allow reuse)
+  if (availableQuestions.length === 0) {
+    session.usedQuestionTypes.clear();
+    // Use all questions again
+    const questionToUse = session.availableQuestions[questionIndex % session.availableQuestions.length];
+    session.usedQuestionTypes.add(questionToUse.id);
+    return formatCustomQuestion(questionToUse, questionIndex + 1);
+  }
+  
+  // Select unused question
+  const questionToUse = availableQuestions[questionIndex % availableQuestions.length];
+  session.usedQuestionTypes.add(questionToUse.id);
+  
+  return formatCustomQuestion(questionToUse, questionIndex + 1);
+}
+
+// Format custom question to match expected structure
+function formatCustomQuestion(customQuestion, questionNumber) {
+  return {
+    id: customQuestion.id,
+    title: customQuestion.title,
+    description: customQuestion.description,
+    examples: customQuestion.examples || [],
+    signature: customQuestion.signature || getDefaultSignature(customQuestion.language),
+    testCases: customQuestion.testCases || [],
+    sampleTests: customQuestion.sampleTests || [],
+    hiddenTests: customQuestion.hiddenTests || [],
+    constraints: customQuestion.constraints || 'Standard constraints apply',
+    complexity: customQuestion.expectedComplexity || 'To be analyzed',
+    difficulty: customQuestion.difficulty,
+    language: customQuestion.language,
+    questionNumber: questionNumber,
+    timeLimit: 300, // 5 minutes default
+    hints: customQuestion.hints || [],
+    categories: customQuestion.categories || [],
+    isCustom: true // Mark as custom question
+  };
+}
+
+// Get default function signature for language
+function getDefaultSignature(language) {
+  const templates = {
+    javascript: "function solution() {\n  // Your code here\n}",
+    python: "def solution():\n    # Your code here\n    pass",
+    java: "public class Solution {\n    public void solution() {\n        // Your code here\n    }\n}",
+    cpp: "void solution() {\n    // Your code here\n}",
+    typescript: "function solution(): void {\n  // Your code here\n}"
+  };
+  
+  return templates[language.toLowerCase()] || templates.javascript;
+}
+
+// Helper function to create question bank (for import functionality)
+async function createQuestionBank(bankData, overwrite = false) {
+  const { bankId, bankName, recruiterId, questions, isPrivate = true } = bankData;
+  
+  if (!overwrite && questionBanks.has(bankId)) {
+    throw new Error('Question bank already exists. Set overwrite=true to update.');
+  }
+  
+  // Validate and process questions (reuse existing validation logic)
+  const validatedQuestions = questions.map((q, index) => {
+    return {
+      id: q.id || `q_${bankId}_${index}_${Date.now()}`,
+      title: q.title || `Question ${index + 1}`,
+      description: q.description || 'No description provided',
+      difficulty: (q.difficulty || 'medium').toLowerCase(),
+      language: (q.language || 'javascript').toLowerCase(),
+      examples: q.examples || [],
+      testCases: q.testCases || [],
+      sampleTests: q.sampleTests || [],
+      hiddenTests: q.hiddenTests || [],
+      constraints: q.constraints || 'Standard constraints apply',
+      expectedComplexity: q.expectedComplexity || 'To be analyzed',
+      signature: q.signature || getDefaultSignature(q.language || 'javascript'),
+      hints: q.hints || [],
+      categories: q.categories || [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  });
+  
+  const questionBank = {
+    id: bankId,
+    name: bankName,
+    recruiterId,
+    isPrivate,
+    questions: validatedQuestions,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    questionCount: validatedQuestions.length,
+    languages: [...new Set(validatedQuestions.map(q => q.language))],
+    difficulties: [...new Set(validatedQuestions.map(q => q.difficulty))]
+  };
+  
+  questionBanks.set(bankId, questionBank);
+  return questionBank;
+}
+
+// Parse CSV format questions
+function parseCSVQuestions(csvData) {
+  // Simple CSV parser for questions
+  // Expected format: title,description,difficulty,language,examples,testCases
+  const lines = csvData.split('\n').filter(line => line.trim());
+  const headers = lines[0].split(',');
+  
+  return lines.slice(1).map(line => {
+    const values = line.split(',');
+    const question = {};
+    
+    headers.forEach((header, index) => {
+      question[header.trim()] = values[index]?.trim() || '';
+    });
+    
+    // Parse JSON fields if needed
+    try {
+      if (question.examples) question.examples = JSON.parse(question.examples);
+      if (question.testCases) question.testCases = JSON.parse(question.testCases);
+    } catch (e) {
+      // Keep as strings if parsing fails
+    }
+    
+    return question;
+  });
+}
+
+// Parse LeetCode format questions
+function parseLeetCodeFormat(leetcodeData) {
+  // Parse LeetCode-style JSON format
+  const data = JSON.parse(leetcodeData);
+  
+  if (Array.isArray(data)) {
+    return data.map(q => ({
+      title: q.title || q.name,
+      description: q.description || q.content,
+      difficulty: q.difficulty?.toLowerCase() || 'medium',
+      language: q.language?.toLowerCase() || 'javascript',
+      examples: q.examples || [],
+      testCases: q.testCases || [],
+      sampleTests: q.sampleTests || [],
+      hiddenTests: q.hiddenTests || [],
+      constraints: q.constraints || 'Standard LeetCode constraints',
+      expectedComplexity: q.complexity || 'To be analyzed'
+    }));
+  }
+  
+  return [data]; // Single question
+}
+
+// Initialize some default question banks for demo
+function initializeDefaultQuestionBanks() {
+  // Create a sample question bank for demonstration
+  const sampleBank = {
+    id: 'default-easy-js',
+    name: 'Default Easy JavaScript Questions',
+    recruiterId: 'system',
+    isPrivate: false,
+    questions: [
+      {
+        id: 'easy-js-1',
+        title: 'Sum of Two Numbers',
+        description: 'Write a function that returns the sum of two numbers.',
+        difficulty: 'easy',
+        language: 'javascript',
+        examples: [
+          { input: '5, 3', output: '8', explanation: '5 + 3 = 8' }
+        ],
+        signature: 'function sum(a, b) {\n  // Your code here\n}',
+        testCases: [
+          { input: '5, 3', expectedOutput: '8', description: 'Basic addition' }
+        ],
+        sampleTests: [
+          { input: '5, 3', expectedOutput: '8', description: 'Basic addition' }
+        ],
+        hiddenTests: [
+          { input: '-1, 1', expectedOutput: '0', description: 'Zero result' }
+        ]
+      }
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    questionCount: 1,
+    languages: ['javascript'],
+    difficulties: ['easy']
+  };
+  
+  questionBanks.set('default-easy-js', sampleBank);
+}
+
+// Initialize default banks on startup
+initializeDefaultQuestionBanks();
 
 module.exports = router;

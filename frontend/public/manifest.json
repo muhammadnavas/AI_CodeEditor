@@ -1,0 +1,16 @@
+{
+  "name": "AI Code Editor",
+  "short_name": "CodeEditor",
+  "description": "AI-powered technical interview platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}
