@@ -114,6 +114,8 @@ Thumbs.db
 *.temp
 */tmp/
 */temp/
+temp/
+/temp/
 
 # Test files
 *.test.js.snap
