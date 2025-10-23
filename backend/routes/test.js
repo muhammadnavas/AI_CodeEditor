@@ -1927,6 +1927,9 @@ function createTestWrapper(userCode, language, testInput) {
 
 // Python test wrapper
 function createPythonTestWrapper(userCode, testInput) {
+  // Normalize Python indentation first
+  userCode = normalizePythonIndentation(userCode);
+  
   // Build proper function call
   let functionCall;
   
@@ -2777,6 +2780,35 @@ async function executeJavaScriptCode(code, startTime, silent = false) {
   }
 }
 
+// Helper function to normalize Python indentation
+function normalizePythonIndentation(code) {
+  // Convert all tabs to 4 spaces
+  let normalized = code.replace(/\t/g, '    ');
+  
+  // Split into lines
+  const lines = normalized.split('\n');
+  
+  // Find the minimum indentation (excluding empty lines)
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (line.trim().length > 0) {
+      const indent = line.match(/^ */)[0].length;
+      minIndent = Math.min(minIndent, indent);
+    }
+  }
+  
+  // Remove the common leading indentation from all lines
+  if (minIndent > 0 && minIndent !== Infinity) {
+    const dedented = lines.map(line => {
+      if (line.trim().length === 0) return '';
+      return line.substring(minIndent);
+    }).join('\n');
+    return dedented;
+  }
+  
+  return normalized;
+}
+
 // Real multi-language code execution
 async function executeMultiLanguageCode(code, language, startTime, silent = false) {
   const fs = require('fs');
@@ -2801,7 +2833,9 @@ async function executeMultiLanguageCode(code, language, startTime, silent = fals
       case 'py':
         fileName = `temp_${timestamp}.py`;
         const pythonFile = path.join(tempDir, fileName);
-        fs.writeFileSync(pythonFile, code);
+        // Normalize Python indentation (convert tabs to spaces)
+        const normalizedPythonCode = normalizePythonIndentation(code);
+        fs.writeFileSync(pythonFile, normalizedPythonCode);
         command = `cd "${tempDir}" && python "${fileName}"`;
         break;
         
