@@ -43,6 +43,42 @@ export default function AITestInterface() {
   const timerRef = useRef(null);
   const questionStartTimeRef = useRef(null);
 
+  // Helper to initialize session state from start-session response
+  const initializeSessionFromResponse = (response, lang) => {
+    setSessionId(response.sessionId);
+    setCandidateName(response.candidateName || testConfig?.candidateName || '');
+    setCurrentQuestion(response.question);
+    setQuestionNumber(response.questionNumber || 1);
+    setTotalQuestions(response.totalQuestions || (response.questions && response.questions.length) || 0);
+    setTestState('active');
+    setTimeLeft(response.question && response.question.timeLimit ? response.question.timeLimit : 300);
+    setTimeSpent(0);
+    setIsTimerActive(true);
+    questionStartTimeRef.current = Date.now();
+
+    const q = response.question || {};
+    const fnName = q.functionName || null;
+    const initialTemplate = (q.signature && q.language && q.language.toLowerCase() === (lang || language).toLowerCase())
+      ? q.signature
+      : (fnName ? buildTemplateWithFunction(fnName, lang || language) : getDefaultTemplate(lang || language));
+    setCode(initialTemplate);
+  };
+
+  // Start a session by configId helper (reusable)
+  const startByConfigId = async (configIdParam, langParam) => {
+    if (!configIdParam) return;
+    setLoading(true);
+    try {
+      const payload = { configId: configIdParam, language: langParam || language };
+      const response = await apiService.startTestSession(payload);
+      initializeSessionFromResponse(response, langParam || language);
+    } catch (err) {
+      console.error('Failed to start by configId:', err);
+      alert('Failed to start test with provided configId.');
+    }
+    setLoading(false);
+  };
+
   // Helper function to get default code template
   const getDefaultTemplate = (lang) => {
     const templates = {
@@ -91,6 +127,22 @@ export default function AITestInterface() {
       }
     };
   }, [timeLeft, isTimerActive, testState, autoSubmitted]);
+
+  // Auto-start when a configId is present in the URL query params (e.g., ?configId=cfg_...&language=python)
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const cfg = params.get('configId') || params.get('configid') || params.get('cfg');
+      const langParam = params.get('language') || params.get('lang');
+      if (cfg) {
+        // If a configId is present, auto-start the test
+        startByConfigId(cfg, langParam || undefined);
+      }
+    } catch (e) {
+      // ignore (e.g., server-side render or invalid URL)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Start test session by sending the uploaded JSON payload to the backend.
   const handleStartTest = async () => {
@@ -323,33 +375,7 @@ export default function AITestInterface() {
                       alert('Please enter a configId');
                       return;
                     }
-                    setLoading(true);
-                    try {
-                      // Start session by configId
-                      const payload = { configId: configIdInput.trim(), language };
-                      const response = await apiService.startTestSession(payload);
-                      setSessionId(response.sessionId);
-                      setCandidateName(response.candidateName || '');
-                      setCurrentQuestion(response.question);
-                      setQuestionNumber(response.questionNumber || 1);
-                      setTotalQuestions(response.totalQuestions || (response.questions && response.questions.length) || 0);
-                      setTestState('active');
-                      setTimeLeft(response.question && response.question.timeLimit ? response.question.timeLimit : 300);
-                      setTimeSpent(0);
-                      setIsTimerActive(true);
-                      questionStartTimeRef.current = Date.now();
-
-                      const q = response.question || {};
-                      const fnName = q.functionName || null;
-                      const initialTemplate = (q.signature && q.language && q.language.toLowerCase() === language.toLowerCase())
-                        ? q.signature
-                        : (fnName ? buildTemplateWithFunction(fnName, language) : getDefaultTemplate(language));
-                      setCode(initialTemplate);
-                    } catch (err) {
-                      console.error('Failed to start by configId:', err);
-                      alert('Failed to start test with provided configId.');
-                    }
-                    setLoading(false);
+                    await startByConfigId(configIdInput.trim(), language);
                   }}
                   className="bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
                 >
