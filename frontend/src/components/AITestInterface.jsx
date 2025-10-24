@@ -9,7 +9,9 @@ export default function AITestInterface() {
   const [testState, setTestState] = useState('setup'); // setup, active, completed
   const [sessionId, setSessionId] = useState(null);
   const [candidateName, setCandidateName] = useState('');
-  const [difficulty, setDifficulty] = useState('easy');
+  // testConfig will hold the JSON payload uploaded by the operator
+  const [testConfig, setTestConfig] = useState(null);
+  // language can be changed by the candidate inside the code editor while taking the test
   const [language, setLanguage] = useState('javascript');
   
   const [currentQuestion, setCurrentQuestion] = useState(null);
@@ -70,32 +72,34 @@ export default function AITestInterface() {
     };
   }, [timeLeft, isTimerActive, testState, autoSubmitted]);
 
-  // Start test session
+  // Start test session by sending the uploaded JSON payload to the backend.
   const handleStartTest = async () => {
-    if (!candidateName.trim()) {
-      alert('Please enter your name to start the test');
+    if (!testConfig) {
+      alert('Please upload the test configuration JSON file before starting the test.');
       return;
     }
 
     setLoading(true);
     try {
-      const response = await apiService.startTestSession(candidateName, difficulty, language);
-      
+      // send the entire testConfig object to backend
+      const response = await apiService.startTestSession(testConfig);
+
       setSessionId(response.sessionId);
+      setCandidateName(response.candidateName || testConfig.candidateName || '');
       setCurrentQuestion(response.question);
-      setQuestionNumber(response.questionNumber);
-      setTotalQuestions(response.totalQuestions);
+      setQuestionNumber(response.questionNumber || 1);
+      setTotalQuestions(response.totalQuestions || (response.questions && response.questions.length) || 0);
       setTestState('active');
-      
+
       // Initialize timer
-      setTimeLeft(300); // 5 minutes
+      setTimeLeft(300); // default 5 minutes per question (backend can override)
       setTimeSpent(0);
       setIsTimerActive(true);
       questionStartTimeRef.current = Date.now();
-      
-      // Set initial code template
-      setCode(response.question.signature || getDefaultTemplate(language));
-      
+
+      // Set initial code template if provided
+      setCode((response.question && (response.question.signature || response.question.template)) || getDefaultTemplate(language));
+
     } catch (error) {
       console.error('Failed to start test:', error);
       alert('Failed to start test. Please try again.');
@@ -278,53 +282,27 @@ export default function AITestInterface() {
           <div className="space-y-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Your Name
+                Upload Test Configuration (JSON)
               </label>
               <input
-                type="text"
-                value={candidateName}
-                onChange={(e) => setCandidateName(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Enter your full name"
-                required
+                type="file"
+                accept="application/json"
+                onChange={async (e) => {
+                  const file = e.target.files && e.target.files[0];
+                  if (!file) return;
+                  try {
+                    const text = await file.text();
+                    const json = JSON.parse(text);
+                    setTestConfig(json);
+                  } catch (err) {
+                    console.error('Invalid JSON file:', err);
+                    alert('Invalid JSON file. Please upload a valid test configuration.');
+                    setTestConfig(null);
+                  }
+                }}
+                className="w-full"
               />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Difficulty Level
-              </label>
-              <select
-                value={difficulty}
-                onChange={(e) => setDifficulty(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="easy">Easy</option>
-                <option value="medium">Medium</option>
-                <option value="hard">Hard</option>
-              </select>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Programming Language
-              </label>
-              <select
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="javascript">JavaScript</option>
-                <option value="python">Python</option>
-                <option value="java">Java</option>
-                <option value="cpp">C++</option>
-                <option value="typescript">TypeScript</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                {language === 'javascript' 
-                  ? 'Full code execution available' 
-                  : 'AI-powered code simulation and analysis'}
-              </p>
+              <p className="text-xs text-gray-500 mt-1">Upload a JSON file containing the test definition (questions, candidateName, settings). Candidate can choose language in the code editor during the test.</p>
             </div>
             
             <div className="bg-blue-50 p-4 rounded-lg">
@@ -344,10 +322,10 @@ export default function AITestInterface() {
             
             <button
               onClick={handleStartTest}
-              disabled={loading || !candidateName.trim()}
+              disabled={loading || !testConfig}
               className="w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
-              {loading ? 'Starting Test...' : 'Start Test'}
+              {loading ? 'Starting Test...' : (testConfig ? 'Start Test (using uploaded JSON)' : 'Upload test JSON to start')}
             </button>
           </div>
         </div>

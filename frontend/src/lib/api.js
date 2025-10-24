@@ -70,10 +70,12 @@ class ApiService {
   }
 
   // Test API
-  async startTestSession(candidateName, difficulty = 'easy', language = 'javascript') {
+  // Accept a payload object describing the test configuration. Example:
+  // { candidateName, questions: [...], difficulty, language }
+  async startTestSession(payload = {}) {
     return this.request('/api/test/start-session', {
       method: 'POST',
-      body: JSON.stringify({ candidateName, difficulty, language }),
+      body: JSON.stringify(payload),
     });
   }
 
