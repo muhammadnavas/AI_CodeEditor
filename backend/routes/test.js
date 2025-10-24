@@ -329,6 +329,19 @@ router.post('/start-session', async (req, res) => {
       }
     }
 
+    // If a candidateId is provided (and no configId), attempt to load the latest config for that candidate
+    if (!uploadedConfig && body.candidateId) {
+      try {
+        const configs = getConfigsCollection();
+        const docs = await configs.find({ 'normalized.candidateId': body.candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+        if (docs && docs.length > 0 && docs[0].normalized) {
+          Object.assign(uploadedConfig || (uploadedConfig = {}), docs[0].normalized);
+        }
+      } catch (err) {
+        console.warn('Failed to load config from DB for candidateId=', body.candidateId, err && err.message);
+      }
+    }
+
     if (uploadedConfig && Array.isArray(uploadedConfig.questions) && uploadedConfig.questions.length > 0) {
       // Allow uploaded config to override session defaults
   // Allow explicit overrides from request body (e.g., UI language selector) to take precedence
@@ -820,6 +833,8 @@ router.post('/upload-config', async (req, res) => {
 
     // Store normalized config in MongoDB and return id
     const configId = `cfg_${Date.now()}_${Math.random().toString(36).substr(2,8)}`;
+    // Attach candidateId if present in payload or metadata
+    normalized.candidateId = payload.candidateId || payload.metadata && payload.metadata.candidateId || normalized.candidateId || null;
     try {
       const configs = getConfigsCollection();
       await configs.insertOne({ configId, normalized, createdAt: new Date() });
@@ -867,6 +882,8 @@ router.post('/config', async (req, res) => {
       }))
     };
 
+    // Attach candidateId if provided
+    normalized.candidateId = payload.candidateId || payload.metadata && payload.metadata.candidateId || null;
     try {
       const configs = getConfigsCollection();
       await configs.insertOne({ configId, normalized, createdAt: new Date() });
@@ -893,6 +910,25 @@ router.get('/config/:configId', async (req, res) => {
   } catch (error) {
     console.error('Get config error:', error);
     res.status(500).json({ error: 'Failed to fetch config', details: error.message });
+  }
+});
+
+// Fetch a stored test config by candidateId (most recent)
+router.get('/config/by-candidate/:candidateId', async (req, res) => {
+  try {
+    const { candidateId } = req.params;
+    const configs = getConfigsCollection();
+    const doc = await configs.find({ 'normalized.candidateId': candidateId })
+      .sort({ createdAt: -1 })
+      .limit(1)
+      .toArray();
+    if (!doc || doc.length === 0) {
+      return res.status(404).json({ error: 'Config not found for candidate' });
+    }
+    res.json(doc[0].normalized || doc[0]);
+  } catch (error) {
+    console.error('Get config by candidate error:', error);
+    res.status(500).json({ error: 'Failed to fetch config by candidate', details: error.message });
   }
 });
 

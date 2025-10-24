@@ -12,6 +12,7 @@ export default function AITestInterface() {
   // testConfig will hold the JSON payload uploaded by the operator
   const [testConfig, setTestConfig] = useState(null);
   const [configIdInput, setConfigIdInput] = useState('');
+  const [candidateIdInput, setCandidateIdInput] = useState('');
   // language can be changed by the candidate inside the code editor while taking the test
   const [language, setLanguage] = useState('javascript');
   
@@ -134,15 +135,34 @@ export default function AITestInterface() {
       const params = new URLSearchParams(window.location.search);
       const cfg = params.get('configId') || params.get('configid') || params.get('cfg');
       const langParam = params.get('language') || params.get('lang');
+      const cand = params.get('candidateId') || params.get('candidateid') || params.get('candidate');
       if (cfg) {
         // If a configId is present, auto-start the test
         startByConfigId(cfg, langParam || undefined);
+      } else if (cand) {
+        // If a candidateId is present, auto-start by candidateId
+        startByCandidateId(cand, langParam || undefined);
       }
     } catch (e) {
       // ignore (e.g., server-side render or invalid URL)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Start a session by candidateId helper (reusable)
+  const startByCandidateId = async (candidateIdParam, langParam) => {
+    if (!candidateIdParam) return;
+    setLoading(true);
+    try {
+      const payload = { candidateId: candidateIdParam, language: langParam || language };
+      const response = await apiService.startTestSession(payload);
+      initializeSessionFromResponse(response, langParam || language);
+    } catch (err) {
+      console.error('Failed to start by candidateId:', err);
+      alert('Failed to start test with provided candidateId.');
+    }
+    setLoading(false);
+  };
 
   // Start test session by sending the uploaded JSON payload to the backend.
   const handleStartTest = async () => {
@@ -383,6 +403,31 @@ export default function AITestInterface() {
                 </button>
               </div>
               <p className="text-xs text-gray-500 mt-1">Paste a stored config ID to start the test directly from the DB.</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Or start by Candidate ID</label>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="text"
+                  placeholder="candidate_12345"
+                  value={candidateIdInput}
+                  onChange={(e) => setCandidateIdInput(e.target.value)}
+                  className="border rounded px-2 py-1 text-sm w-full"
+                />
+                <button
+                  onClick={async () => {
+                    if (!candidateIdInput || candidateIdInput.trim() === '') {
+                      alert('Please enter a candidateId');
+                      return;
+                    }
+                    await startByCandidateId(candidateIdInput.trim(), language);
+                  }}
+                  className="bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
+                >
+                  Start
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Paste the candidate id provided by your system to fetch the assessment and start the test.</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
