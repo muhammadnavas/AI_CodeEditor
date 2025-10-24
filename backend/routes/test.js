@@ -238,20 +238,33 @@ router.post('/generate-question', async (req, res) => {
 // Start a new test session
 router.post('/start-session', async (req, res) => {
   try {
-    const { 
-      candidateName, 
-      difficulty = 'easy', 
-      language = 'javascript',
-      questionBankId = null, // Custom question bank ID
-      recruiterId = null,
-      totalQuestions = 2
-    } = req.body;
-    
+    // Support two modes:
+    // 1) Legacy: { candidateName, difficulty, language, questionBankId, totalQuestions }
+    // 2) Uploaded test config: { testConfig: { candidateName, timePerQuestion, difficulty, language, questions: [...] } }
+    const body = req.body || {};
+
+    // If an operator uploaded a full test JSON, prefer that
+    const uploadedConfig = body.testConfig || (Array.isArray(body.questions) ? {
+      candidateName: body.candidateName,
+      difficulty: body.difficulty,
+      language: body.language,
+      totalQuestions: body.totalQuestions || body.questions.length,
+      timePerQuestion: body.timePerQuestion,
+      questions: body.questions
+    } : null);
+
+    let candidateName = body.candidateName;
+    let difficulty = body.difficulty || 'easy';
+    let language = body.language || 'javascript';
+    let questionBankId = body.questionBankId || null;
+    let recruiterId = body.recruiterId || null;
+    let totalQuestions = typeof body.totalQuestions === 'number' ? body.totalQuestions : 2;
+
     const sessionId = `test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+
     const session = {
       id: sessionId,
-      candidateName,
+      candidateName: candidateName || (uploadedConfig && uploadedConfig.candidateName) || 'Candidate',
       difficulty,
       language,
       questionBankId,
@@ -261,11 +274,89 @@ router.post('/start-session', async (req, res) => {
       totalQuestions,
       questions: [],
       results: [],
-      usedQuestionTypes: new Set(), // Track used question types
-      availableQuestions: [], // Questions from selected bank
+      usedQuestionTypes: new Set(),
+      availableQuestions: [],
       isActive: true
     };
 
+    // Helper to extract function name from a provided signature/template
+    function extractFunctionName(signature, lang) {
+      if (!signature || typeof signature !== 'string') return null;
+      try {
+        // JavaScript common patterns
+        if (/function\s+([a-zA-Z0-9_]+)/.test(signature)) {
+          return signature.match(/function\s+([a-zA-Z0-9_]+)/)[1];
+        }
+        if (/const\s+([a-zA-Z0-9_]+)\s*=\s*\(/.test(signature)) {
+          return signature.match(/const\s+([a-zA-Z0-9_]+)\s*=\s*\(/)[1];
+        }
+        if (/let\s+([a-zA-Z0-9_]+)\s*=\s*\(/.test(signature)) {
+          return signature.match(/let\s+([a-zA-Z0-9_]+)\s*=\s*\(/)[1];
+        }
+        if (/([a-zA-Z0-9_]+)\s*:\s*function\s*\(/.test(signature)) {
+          return signature.match(/([a-zA-Z0-9_]+)\s*:\s*function\s*\(/)[1];
+        }
+        // Python: def name(
+        if (/def\s+([a-zA-Z0-9_]+)\s*\(/.test(signature)) {
+          return signature.match(/def\s+([a-zA-Z0-9_]+)\s*\(/)[1];
+        }
+        // Java: returnType name(...)
+        if (/\w+\s+([a-zA-Z0-9_]+)\s*\(.*\)\s*\{?/.test(signature)) {
+          const m = signature.match(/\w+\s+([a-zA-Z0-9_]+)\s*\(.*\)/);
+          if (m) return m[1];
+        }
+        return null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // If uploaded test config provided, normalize and use its questions directly
+    if (uploadedConfig && Array.isArray(uploadedConfig.questions) && uploadedConfig.questions.length > 0) {
+      // Allow uploaded config to override session defaults
+      session.candidateName = uploadedConfig.candidateName || session.candidateName;
+      session.difficulty = uploadedConfig.difficulty || session.difficulty;
+      session.language = uploadedConfig.language || session.language;
+      session.totalQuestions = typeof uploadedConfig.totalQuestions === 'number' ? uploadedConfig.totalQuestions : uploadedConfig.questions.length;
+
+      // Normalize questions
+      session.questions = uploadedConfig.questions.map((q, idx) => {
+        const sig = q.signature || q.function || q.signatureTemplate || '';
+        const lang = (q.language || session.language || 'javascript').toLowerCase();
+        const id = q.id || `q_${Date.now()}_${idx}_${Math.random().toString(36).substr(2,6)}`;
+        return {
+          id,
+          title: q.title || q.name || `Question ${idx + 1}`,
+          description: q.description || q.prompt || '',
+          signature: sig,
+          functionName: q.functionName || extractFunctionName(sig, lang) || null,
+          sampleTests: q.sampleTests || q.samples || q.examples || [],
+          hiddenTests: q.hiddenTests || q.hidden || [],
+          testCases: q.testCases || q.tests || [],
+          constraints: q.constraints || q.constraint || '',
+          expectedComplexity: q.expectedComplexity || q.complexity || '',
+          difficulty: q.difficulty || session.difficulty,
+          language: lang,
+          timeLimit: q.timeLimit || uploadedConfig.timePerQuestion || 300,
+          metadata: q.metadata || {}
+        };
+      });
+
+      // Persist session and return first question
+      testSessions.set(sessionId, session);
+
+      const firstQuestion = session.questions[0];
+
+      return res.json({
+        sessionId,
+        question: firstQuestion,
+        questionNumber: 1,
+        totalQuestions: session.totalQuestions,
+        timeLimit: firstQuestion.timeLimit || 300
+      });
+    }
+
+    // Legacy behavior: use question bank or generate questions dynamically
     // Load questions from custom bank or use defaults
     if (questionBankId) {
       const questionBank = questionBanks.get(questionBankId);
@@ -289,7 +380,7 @@ router.post('/start-session', async (req, res) => {
         });
       }
     }
-    
+
     testSessions.set(sessionId, session);
     
     // Generate first question
@@ -342,8 +433,8 @@ router.post('/test-code', async (req, res) => {
       // For non-JavaScript languages, skip the basic execution and go straight to sample tests
       const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
       if (jsLanguages.includes(session.language.toLowerCase())) {
-        // Execute JavaScript code to get basic output
-        const executionResult = await executeCode(code, session.language);
+        // Execute JavaScript code to get basic output; prefer the question's function name when available
+        const executionResult = await executeCode(code, session.language, false, question.functionName || null);
         
         if (executionResult.error) {
           error = executionResult.error;
@@ -357,11 +448,11 @@ router.post('/test-code', async (req, res) => {
 
       // Run sample tests from the question
       if (question.sampleTests && question.sampleTests.length > 0) {
-        sampleTestResults = await runSampleTests(code, session.language, question.sampleTests);
+        sampleTestResults = await runSampleTests(code, session.language, question.sampleTests, question.functionName || null);
       } else if (question.testCases && question.testCases.length > 0) {
         // Fallback to first few test cases as samples
         const sampleCases = question.testCases.slice(0, Math.min(3, question.testCases.length));
-        sampleTestResults = await runSampleTests(code, session.language, sampleCases);
+        sampleTestResults = await runSampleTests(code, session.language, sampleCases, question.functionName || null);
       }
 
     } catch (execError) {
@@ -1699,7 +1790,7 @@ function generateTestCases(questionDescription, language) {
 }
 
 // PRODUCTION-GRADE: Sample test runner for recruitment accuracy
-async function runSampleTests(code, language, sampleTests) {
+async function runSampleTests(code, language, sampleTests, expectedFunctionName = null) {
   const results = [];
   
   for (const testCase of sampleTests) {
@@ -1707,8 +1798,8 @@ async function runSampleTests(code, language, sampleTests) {
       // Use actual code execution for all supported languages
       const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
       if (language && jsLanguages.includes(language.toLowerCase())) {
-        // JavaScript - use VM-based execution
-        const result = await runJavaScriptTest(code, testCase);
+        // JavaScript - use VM-based execution, prefer expected function name when provided
+        const result = await runJavaScriptTest(code, testCase, expectedFunctionName);
         result.simulated = false;
         results.push(result);
       } else {
@@ -1733,12 +1824,12 @@ async function runSampleTests(code, language, sampleTests) {
 }
 
 // CRITICAL: Rigorous JavaScript test execution for recruitment
-async function runJavaScriptTest(code, testCase) {
+async function runJavaScriptTest(code, testCase, expectedFunctionName = null) {
   const startTime = Date.now();
   
   try {
-    // Execute code to get function (silent mode for testing)
-    const codeExecution = await executeJavaScriptCode(code, startTime, true);
+  // Execute code to get function (silent mode for testing)
+  const codeExecution = await executeJavaScriptCode(code, startTime, true, expectedFunctionName);
     
     if (codeExecution.error) {
       return {
@@ -2481,7 +2572,7 @@ async function analyzeCodeSubmission(code, language, question) {
     // First, try to execute the code to check for runtime errors
     let executionResult = null;
     try {
-      executionResult = await executeCode(code, language);
+      executionResult = await executeCode(code, language, false, question.functionName || null);
     } catch (execError) {
       executionResult = { error: execError.message };
     }
@@ -2590,7 +2681,7 @@ async function analyzeCodeSubmission(code, language, question) {
       const testsToRun = question.hiddenTests && question.hiddenTests.length > 0 
         ? [...(question.sampleTests || []), ...question.hiddenTests]
         : question.testCases || [];
-      const testResults = await runAutomaticTests(code, language, testsToRun);
+      const testResults = await runAutomaticTests(code, language, testsToRun, question.functionName || null);
       analysis.testResults = testResults;
       analysis.testsPassed = testResults.filter(t => t.passed).length;
       analysis.totalTests = testResults.length;
@@ -2660,12 +2751,12 @@ async function analyzeCodeSubmission(code, language, question) {
 
 // Helper function to execute code safely
 // Production-grade code execution engine for recruitment testing
-async function executeCode(code, language, silent = false) {
+async function executeCode(code, language, silent = false, expectedFunctionName = null) {
   const startTime = Date.now();
   
   const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
   if (language && jsLanguages.includes(language.toLowerCase())) {
-    return await executeJavaScriptCode(code, startTime, silent);
+    return await executeJavaScriptCode(code, startTime, silent, expectedFunctionName);
   } else {
     // Use real execution for other languages
     return await executeMultiLanguageCode(code, language, startTime, silent);
@@ -2673,7 +2764,7 @@ async function executeCode(code, language, silent = false) {
 }
 
 // Secure JavaScript execution with proper function testing
-async function executeJavaScriptCode(code, startTime, silent = false) {
+async function executeJavaScriptCode(code, startTime, silent = false, expectedFunctionName = null) {
   try {
     const vm = require('vm');
     let output = '';
@@ -2750,6 +2841,18 @@ async function executeJavaScriptCode(code, startTime, silent = false) {
 
     functionName = context._functionName;
     executedFunction = context._capturedFunction;
+
+    // If an expectedFunctionName was provided and exists in the context, prefer it
+    if (expectedFunctionName && typeof expectedFunctionName === 'string') {
+      try {
+        if (Object.prototype.hasOwnProperty.call(context, expectedFunctionName) && typeof context[expectedFunctionName] === 'function') {
+          functionName = expectedFunctionName;
+          executedFunction = context[expectedFunctionName];
+        }
+      } catch (e) {
+        // ignore and fall back to auto-detected function
+      }
+    }
 
     // Only add success message if not in silent mode (for test execution)
     if (functionName && !silent) {
@@ -3047,7 +3150,7 @@ async function simulateCodeExecution(code, language, startTime) {
 }
 
 // Helper function to run automatic test cases
-async function runAutomaticTests(code, language, testCases) {
+async function runAutomaticTests(code, language, testCases, expectedFunctionName = null) {
   const results = [];
   
   // Support all languages with real execution
@@ -3058,8 +3161,8 @@ async function runAutomaticTests(code, language, testCases) {
       let result;
       
       if (jsLanguages.includes(language.toLowerCase())) {
-        // JavaScript - use VM-based execution
-        result = await runJavaScriptTest(code, testCase);
+          // JavaScript - use VM-based execution; prefer expected function name when provided
+          result = await runJavaScriptTest(code, testCase, expectedFunctionName);
       } else {
         // Other languages - use system execution
         result = await runMultiLanguageTest(code, language, testCase);
