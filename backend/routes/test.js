@@ -387,44 +387,9 @@ router.post('/start-session', async (req, res) => {
       });
     }
 
-    // Legacy behavior: use question bank or generate questions dynamically
-    // Load questions from custom bank or use defaults
-    if (questionBankId) {
-      const questionBank = questionBanks.get(questionBankId);
-      if (!questionBank) {
-        return res.status(404).json({ error: 'Question bank not found' });
-      }
-      
-      // Check access permissions
-      if (questionBank.isPrivate && questionBank.recruiterId !== recruiterId) {
-        return res.status(403).json({ error: 'Access denied to private question bank' });
-      }
-      
-      // Filter questions by difficulty and language
-      session.availableQuestions = questionBank.questions.filter(q => 
-        q.difficulty === difficulty && q.language.toLowerCase() === language.toLowerCase()
-      );
-      
-      if (session.availableQuestions.length === 0) {
-        return res.status(400).json({ 
-          error: `No questions found for ${difficulty} ${language} in the selected question bank` 
-        });
-      }
-    }
-
-    testSessions.set(sessionId, session);
-    
-    // Generate first question
-    const firstQuestion = await generateUniqueQuestion(difficulty, language, 0, session);
-    session.questions.push(firstQuestion);
-    
-    res.json({
-      sessionId,
-      question: firstQuestion,
-      questionNumber: 1,
-      totalQuestions: session.totalQuestions,
-      timeLimit: 300
-    });
+    // No uploaded/stored config found — do not generate mock questions.
+    // This system requires that the test questions be provided via stored JSON (configId or candidateId).
+    return res.status(404).json({ error: 'No stored test configuration found. Provide a configId or candidateId that maps to a stored test JSON.' });
 
   } catch (error) {
     console.error('Start Session Error:', error);
@@ -533,10 +498,15 @@ router.post('/submit-code', async (req, res) => {
     let testComplete = false;
     
     if (questionNumber < session.totalQuestions) {
-      // Generate next unique question
-      nextQuestion = await generateUniqueQuestion(session.difficulty, session.language, questionNumber, session);
-      session.questions.push(nextQuestion);
-      session.currentQuestion = questionNumber;
+      // Move to the next preloaded question from the stored config
+      nextQuestion = session.questions[questionNumber]; // zero-based index
+      if (nextQuestion) {
+        session.currentQuestion = questionNumber;
+      } else {
+        // No next question available in stored config — treat as complete
+        session.isActive = false;
+        testComplete = true;
+      }
     } else {
       // Test complete
       session.isActive = false;
@@ -588,9 +558,14 @@ router.post('/timeout-question', async (req, res) => {
     let testComplete = false;
     
     if (questionNumber < session.totalQuestions) {
-      nextQuestion = await generateUniqueQuestion(session.difficulty, session.language, questionNumber, session);
-      session.questions.push(nextQuestion);
-      session.currentQuestion = questionNumber;
+      // Move to the next preloaded question from the stored config
+      nextQuestion = session.questions[questionNumber];
+      if (nextQuestion) {
+        session.currentQuestion = questionNumber;
+      } else {
+        session.isActive = false;
+        testComplete = true;
+      }
     } else {
       session.isActive = false;
       testComplete = true;
