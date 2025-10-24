@@ -54,6 +54,25 @@ export default function AITestInterface() {
     return templates[lang] || templates.javascript;
   };
 
+  // Build a template matching a given function name for a language
+  const buildTemplateWithFunction = (fnName, lang) => {
+    if (!fnName) return getDefaultTemplate(lang);
+    switch ((lang || 'javascript').toLowerCase()) {
+      case 'python':
+        return `def ${fnName}(*args):\n    # your code here\n    pass`;
+      case 'java':
+        return `public class Solution {\n    public static Object ${fnName}(/* params */) {\n        // your code here\n        return null;\n    }\n}`;
+      case 'cpp':
+      case 'c++':
+        return `#include <bits/stdc++.h>\nusing namespace std;\n\n// ${fnName} implementation\nvoid ${fnName}() {\n    // your code here\n}`;
+      case 'typescript':
+        return `function ${fnName}(...args: any[]): any {\n  // your code here\n}`;
+      case 'javascript':
+      default:
+        return `function ${fnName}(...args) {\n  // your code here\n}`;
+    }
+  };
+
   // Timer effect
   useEffect(() => {
     if (isTimerActive && timeLeft > 0 && testState === 'active') {
@@ -83,7 +102,7 @@ export default function AITestInterface() {
     try {
       // send the entire testConfig object to backend, but allow explicit language override from the UI
       const payload = { ...testConfig, language };
-      const response = await apiService.startTestSession(payload);
+  const response = await apiService.startTestSession(payload);
 
       setSessionId(response.sessionId);
       setCandidateName(response.candidateName || testConfig.candidateName || '');
@@ -99,8 +118,13 @@ export default function AITestInterface() {
       questionStartTimeRef.current = Date.now();
 
       // Set initial code template if provided
-  const initialTemplate = (response.question && (response.question.signature || response.question.template)) || getDefaultTemplate(language);
-  setCode(initialTemplate);
+      // Prefer server-provided signature if it matches language; otherwise build template from functionName
+      const q = response.question || {};
+      const fnName = q.functionName || null;
+      const initialTemplate = (q.signature && q.language && q.language.toLowerCase() === language.toLowerCase())
+        ? q.signature
+        : (fnName ? buildTemplateWithFunction(fnName, language) : getDefaultTemplate(language));
+      setCode(initialTemplate);
 
     } catch (error) {
       console.error('Failed to start test:', error);
@@ -377,6 +401,28 @@ export default function AITestInterface() {
                 <Timer className="h-4 w-4" />
                 <span className="font-mono font-bold text-lg">{formatTime(timeLeft)}</span>
                 <span className="text-xs font-medium opacity-75">this question</span>
+              </div>
+              {/* In-test language selector - updates code template when changed */}
+              <div className="flex items-center space-x-2">
+                <label className="text-sm text-gray-600">Language:</label>
+                <select
+                  value={language}
+                  onChange={(e) => {
+                    const newLang = e.target.value;
+                    setLanguage(newLang);
+                    // Update code template to match the selected language and keep function name if available
+                    const fn = currentQuestion?.functionName || null;
+                    const newTemplate = fn ? buildTemplateWithFunction(fn, newLang) : getDefaultTemplate(newLang);
+                    setCode(newTemplate);
+                  }}
+                  className="border rounded px-2 py-1 text-sm"
+                >
+                  <option value="javascript">JavaScript</option>
+                  <option value="typescript">TypeScript</option>
+                  <option value="python">Python</option>
+                  <option value="java">Java</option>
+                  <option value="cpp">C++</option>
+                </select>
               </div>
               
               <button
