@@ -314,10 +314,11 @@ router.post('/start-session', async (req, res) => {
     // If uploaded test config provided, normalize and use its questions directly
     if (uploadedConfig && Array.isArray(uploadedConfig.questions) && uploadedConfig.questions.length > 0) {
       // Allow uploaded config to override session defaults
-      session.candidateName = uploadedConfig.candidateName || session.candidateName;
-      session.difficulty = uploadedConfig.difficulty || session.difficulty;
-      session.language = uploadedConfig.language || session.language;
-      session.totalQuestions = typeof uploadedConfig.totalQuestions === 'number' ? uploadedConfig.totalQuestions : uploadedConfig.questions.length;
+  // Allow explicit overrides from request body (e.g., UI language selector) to take precedence
+  session.candidateName = body.candidateName || uploadedConfig.candidateName || session.candidateName;
+  session.difficulty = body.difficulty || uploadedConfig.difficulty || session.difficulty;
+  session.language = body.language || uploadedConfig.language || session.language;
+  session.totalQuestions = typeof uploadedConfig.totalQuestions === 'number' ? uploadedConfig.totalQuestions : uploadedConfig.questions.length;
 
       // Normalize questions
       session.questions = uploadedConfig.questions.map((q, idx) => {

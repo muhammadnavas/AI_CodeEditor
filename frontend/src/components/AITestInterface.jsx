@@ -81,8 +81,9 @@ export default function AITestInterface() {
 
     setLoading(true);
     try {
-      // send the entire testConfig object to backend
-      const response = await apiService.startTestSession(testConfig);
+      // send the entire testConfig object to backend, but allow explicit language override from the UI
+      const payload = { ...testConfig, language };
+      const response = await apiService.startTestSession(payload);
 
       setSessionId(response.sessionId);
       setCandidateName(response.candidateName || testConfig.candidateName || '');
@@ -91,14 +92,15 @@ export default function AITestInterface() {
       setTotalQuestions(response.totalQuestions || (response.questions && response.questions.length) || 0);
       setTestState('active');
 
-      // Initialize timer
-      setTimeLeft(300); // default 5 minutes per question (backend can override)
+  // Initialize timer
+  setTimeLeft(300); // default 5 minutes per question (backend can override)
       setTimeSpent(0);
       setIsTimerActive(true);
       questionStartTimeRef.current = Date.now();
 
       // Set initial code template if provided
-      setCode((response.question && (response.question.signature || response.question.template)) || getDefaultTemplate(language));
+  const initialTemplate = (response.question && (response.question.signature || response.question.template)) || getDefaultTemplate(language);
+  setCode(initialTemplate);
 
     } catch (error) {
       console.error('Failed to start test:', error);
@@ -284,6 +286,21 @@ export default function AITestInterface() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Upload Test Configuration (JSON)
               </label>
+                <div className="flex items-center space-x-3 mb-3">
+                  <label className="text-sm font-medium text-gray-700">Select language:</label>
+                  <select
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="border rounded px-2 py-1 text-sm"
+                  >
+                    <option value="javascript">JavaScript</option>
+                    <option value="typescript">TypeScript</option>
+                    <option value="python">Python</option>
+                    <option value="java">Java</option>
+                    <option value="cpp">C++</option>
+                  </select>
+                  <p className="text-xs text-gray-500">(This sets the candidate's initial language; candidates can change it in the editor.)</p>
+                </div>
               <input
                 type="file"
                 accept="application/json"
