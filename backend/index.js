@@ -20,29 +20,45 @@ app.use(apiLimiter);
 // CORS Configuration
 // Build the allowed origins list from env or sensible defaults
 const defaultFrontend = process.env.FRONTEND_URL || 'https://ai-code-editor-psi-two.vercel.app';
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
+const rawOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',')
   : ['http://localhost:3000', 'http://localhost:5000', defaultFrontend];
 
-// Log allowed origins on startup to help with debugging
-console.log('[CORS] Allowed origins:', allowedOrigins);
+// Normalization helper: trim, remove wrapping quotes, remove trailing slashes, lowercase
+function normalizeOrigin(o) {
+  if (!o || typeof o !== 'string') return '';
+  let s = o.trim();
+  // remove surrounding quotes if present
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.substring(1, s.length - 1).trim();
+  }
+  // remove trailing slashes
+  s = s.replace(/\/+$/, '');
+  return s;
+}
+
+const allowedOrigins = rawOrigins.map(normalizeOrigin).filter(Boolean);
+console.log('[CORS] Allowed origins (normalized):', allowedOrigins);
 
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (server-to-server, curl, mobile, etc.)
     if (!origin) return callback(null, true);
 
+    const normalizedIncoming = normalizeOrigin(origin);
+
     // Allow wildcard
     if (allowedOrigins.includes('*')) return callback(null, true);
 
     // Exact match
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (allowedOrigins.indexOf(normalizedIncoming) !== -1) {
       return callback(null, true);
     }
 
-    // Not allowed - log for diagnostics and deny
-    console.warn(`[CORS] Blocked origin: ${origin}`);
-    return callback(new Error('Not allowed by CORS'));
+    // Not allowed - log for diagnostics and DENY (no CORS headers will be set)
+    console.warn(`[CORS] Blocked origin: ${origin} (normalized: ${normalizedIncoming})`);
+    // Do not throw an error here; respond without CORS headers so the browser will block.
+    return callback(null, false);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Requested-With'],
@@ -55,10 +71,20 @@ const corsOptions = {
 app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
 
-// Log incoming origins for easier debugging in hosted environments
+// Log incoming origins for easier debugging in hosted environments and return a clear 403 JSON
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin) console.log(`[CORS] Incoming request from origin=${origin} path=${req.path}`);
+
+  // If origin is present and not allowed, return 403 with JSON for easier debugging in server logs.
+  if (origin) {
+    const normalizedIncoming = normalizeOrigin(origin);
+    if (!allowedOrigins.includes('*') && !allowedOrigins.includes(normalizedIncoming)) {
+      res.status(403).json({ error: 'CORS origin blocked', origin: origin });
+      return;
+    }
+  }
+
   next();
 });
 
