@@ -6,7 +6,7 @@ A full-stack AI-powered code editor with real-time code execution and AI assista
 
 - **Frontend**: Next.js 14, React, TailwindCSS, Monaco Editor
 - **Backend**: Node.js, Express, OpenAI API
-- **Infrastructure**: Docker, PostgreSQL, Redis
+- **Infrastructure**: Docker
 - **Code Execution**: Docker containers for Python, JavaScript, Java, C++
 
 ## 📋 Prerequisites
@@ -88,9 +88,6 @@ cp .env.example .env
 Edit `.env` and set:
 ```env
 OPENAI_API_KEY=sk-your-actual-openai-key
-API_KEY=generate-random-string-here
-DB_PASSWORD=secure-database-password
-REDIS_PASSWORD=secure-redis-password
 CORS_ORIGIN=https://yourdomain.com
 NEXT_PUBLIC_API_URL=https://api.yourdomain.com
 NODE_ENV=production
@@ -144,7 +141,7 @@ docker compose down
      - Build Command: `cd frontend && npm install && npm run build`
      - Start Command: `cd frontend && npm start`
 
-2. Add PostgreSQL and Redis from Render's Add-ons
+2. Add PostgreSQL and Redis from Render's Add-ons *(Optional - not currently used)*
 
 3. Set environment variables from `.env.example`
 
@@ -183,9 +180,6 @@ docker compose up -d --build
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | ✅ Yes | OpenAI API key for AI features |
-| `API_KEY` | ✅ Yes | Backend API authentication key |
-| `DB_PASSWORD` | ✅ Yes | PostgreSQL password |
-| `REDIS_PASSWORD` | ✅ Yes | Redis password |
 | `PORT` | No | Backend port (default: 3001) |
 | `CORS_ORIGIN` | Yes | Allowed frontend origins |
 | `NODE_ENV` | Yes | `development` or `production` |
