@@ -1,6 +1,8 @@
-const API_BASE_URL = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-  ? 'http://localhost:3001'
-  : 'https://your-api-domain.com';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (
+  typeof window !== 'undefined' && window.location.hostname === 'localhost'
+    ? 'http://localhost:3001'
+    : ''
+);
 
 class ApiService {
   async request(endpoint, options = {}) {
