@@ -37,7 +37,7 @@ services:
   # Backend API
   backend:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     container_name: codeeditor-backend
     depends_on:
@@ -68,7 +68,7 @@ services:
   # Frontend
   frontend:
     build:
-      context: ./frontend
+      context: ../frontend
       dockerfile: Dockerfile
     container_name: codeeditor-frontend
     depends_on:
