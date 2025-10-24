@@ -4,6 +4,7 @@ const cors = require('cors');
 const OpenAI = require('openai');
 const { helmetConfig, apiLimiter, requestSizeLimiter } = require('./middleware/security');
 const codeRunner = require('./services/codeRunner');
+const { connectToDB } = require('./services/db');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -139,8 +140,22 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+// Initialize DB (if MONGO_URI present) and then start server
+(async () => {
+  try {
+    if (process.env.MONGO_URI) {
+      await connectToDB(process.env.MONGO_URI);
+      console.log('[DB] Connected to MongoDB');
+    } else {
+      console.warn('[DB] MONGO_URI not set; configs will remain in-memory if code expects DB.');
+    }
+  } catch (err) {
+    console.error('[DB] Failed to connect to MongoDB:', err.message || err);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+})();
 
 module.exports = app;

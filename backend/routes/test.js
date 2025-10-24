@@ -9,6 +9,9 @@ const openai = new OpenAI({
 // Test sessions storage (in production, use a database)
 const testSessions = new Map();
 
+// DB-backed stored test configs
+const { getConfigsCollection } = require('../services/db');
+
 // Custom question banks storage (recruiters can add their own)
 const questionBanks = new Map();
 
@@ -312,6 +315,20 @@ router.post('/start-session', async (req, res) => {
     }
 
     // If uploaded test config provided, normalize and use its questions directly
+    // Additionally support loading a config by configId (e.g., stored in DB) when provided
+    if (body.configId) {
+      try {
+        const configs = getConfigsCollection();
+        const storedDoc = await configs.findOne({ configId: body.configId });
+        if (storedDoc && storedDoc.normalized) {
+          // Merge stored config into uploadedConfig variable for reuse
+          Object.assign(uploadedConfig || (uploadedConfig = {}), storedDoc.normalized);
+        }
+      } catch (err) {
+        console.warn('Failed to load config from DB for configId=', body.configId, err && err.message);
+      }
+    }
+
     if (uploadedConfig && Array.isArray(uploadedConfig.questions) && uploadedConfig.questions.length > 0) {
       // Allow uploaded config to override session defaults
   // Allow explicit overrides from request body (e.g., UI language selector) to take precedence
@@ -739,6 +756,143 @@ router.get('/preview-question', async (req, res) => {
     res.json(question);
   } catch (error) {
     res.status(500).json({ error: 'Failed to generate preview question', details: error.message });
+  }
+});
+
+// Serve the example test config file so clients can fetch a sample via API
+router.get('/example-config', async (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const examplePath = path.join(__dirname, '../../frontend/test-configs/example_test.json');
+    if (!fs.existsSync(examplePath)) {
+      return res.status(404).json({ error: 'Example test config not found' });
+    }
+    const content = fs.readFileSync(examplePath, 'utf8');
+    const json = JSON.parse(content);
+    res.json(json);
+  } catch (error) {
+    console.error('Failed to load example config:', error);
+    res.status(500).json({ error: 'Failed to load example config', details: error.message });
+  }
+});
+
+// Upload a test config via API (accepts JSON body). Returns normalized config.
+router.post('/upload-config', async (req, res) => {
+  try {
+    const payload = req.body;
+    if (!payload || typeof payload !== 'object') {
+      return res.status(400).json({ error: 'Missing JSON body' });
+    }
+
+    // Basic validation
+    if (!Array.isArray(payload.questions) || payload.questions.length === 0) {
+      return res.status(400).json({ error: 'Payload must include a non-empty "questions" array' });
+    }
+
+    // Normalize questions similar to start-session logic
+    const normalized = {
+      candidateName: payload.candidateName || 'Candidate',
+      timePerQuestion: payload.timePerQuestion || payload.timePerQuestion === 0 ? payload.timePerQuestion : 300,
+      difficulty: payload.difficulty || 'easy',
+      questions: payload.questions.map((q, idx) => {
+        const sig = q.signature || q.function || q.signatureTemplate || '';
+        const lang = (q.language || payload.language || 'javascript').toLowerCase();
+        const id = q.id || `q_upload_${Date.now()}_${idx}_${Math.random().toString(36).substr(2,6)}`;
+        return {
+          id,
+          title: q.title || q.name || `Question ${idx + 1}`,
+          description: q.description || q.prompt || '',
+          signature: sig,
+          functionName: q.functionName || (sig ? (sig.match(/function\s+([a-zA-Z0-9_]+)\s*\(|def\s+([a-zA-Z0-9_]+)\s*\(/) || [null, null])[1] : null),
+          sampleTests: q.sampleTests || q.samples || q.examples || [],
+          hiddenTests: q.hiddenTests || q.hidden || [],
+          testCases: q.testCases || q.tests || [],
+          constraints: q.constraints || q.constraint || '',
+          expectedComplexity: q.expectedComplexity || q.complexity || '',
+          difficulty: q.difficulty || payload.difficulty || 'easy',
+          language: lang,
+          timeLimit: q.timeLimit || payload.timePerQuestion || 300,
+          metadata: q.metadata || {}
+        };
+      })
+    };
+
+    // Store normalized config in MongoDB and return id
+    const configId = `cfg_${Date.now()}_${Math.random().toString(36).substr(2,8)}`;
+    try {
+      const configs = getConfigsCollection();
+      await configs.insertOne({ configId, normalized, createdAt: new Date() });
+    } catch (err) {
+      console.error('Failed to persist config to DB:', err && err.message);
+      // Fallback: still return id and normalized (caller may retry storing)
+    }
+
+    // Return normalized config and id
+    res.json({ success: true, configId, normalized });
+  } catch (error) {
+    console.error('Upload config error:', error);
+    res.status(500).json({ error: 'Failed to upload config', details: error.message });
+  }
+});
+
+// Save a test config explicitly (alias) and return generated id
+router.post('/config', async (req, res) => {
+  try {
+    const payload = req.body;
+    if (!payload || !Array.isArray(payload.questions) || payload.questions.length === 0) {
+      return res.status(400).json({ error: 'Invalid payload; must include questions array' });
+    }
+
+    const configId = `cfg_${Date.now()}_${Math.random().toString(36).substr(2,8)}`;
+    // lightweight normalization (reuse logic from upload-config)
+    const normalized = {
+      candidateName: payload.candidateName || 'Candidate',
+      timePerQuestion: payload.timePerQuestion || 300,
+      difficulty: payload.difficulty || 'easy',
+      questions: payload.questions.map((q, idx) => ({
+        id: q.id || `q_${configId}_${idx}`,
+        title: q.title || q.name || `Question ${idx + 1}`,
+        description: q.description || q.prompt || '',
+        signature: q.signature || '',
+        functionName: q.functionName || null,
+        sampleTests: q.sampleTests || q.samples || q.examples || [],
+        hiddenTests: q.hiddenTests || q.hidden || [],
+        testCases: q.testCases || q.tests || [],
+        constraints: q.constraints || '',
+        difficulty: q.difficulty || payload.difficulty || 'easy',
+        language: (q.language || payload.language || 'javascript').toLowerCase(),
+        timeLimit: q.timeLimit || payload.timePerQuestion || 300,
+        metadata: q.metadata || {}
+      }))
+    };
+
+    try {
+      const configs = getConfigsCollection();
+      await configs.insertOne({ configId, normalized, createdAt: new Date() });
+    } catch (err) {
+      console.error('Failed to persist config to DB:', err && err.message);
+    }
+    res.json({ success: true, configId });
+  } catch (error) {
+    console.error('Create config error:', error);
+    res.status(500).json({ error: 'Failed to create config', details: error.message });
+  }
+});
+
+// Fetch a stored test config by id
+router.get('/config/:configId', async (req, res) => {
+  try {
+    const { configId } = req.params;
+    const configs = getConfigsCollection();
+    const doc = await configs.findOne({ configId });
+    if (!doc) {
+      return res.status(404).json({ error: 'Config not found' });
+    }
+    res.json(doc.normalized || doc);
+  } catch (error) {
+    console.error('Get config error:', error);
+    res.status(500).json({ error: 'Failed to fetch config', details: error.message });
   }
 });
 

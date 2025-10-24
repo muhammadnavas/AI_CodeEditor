@@ -11,6 +11,7 @@ export default function AITestInterface() {
   const [candidateName, setCandidateName] = useState('');
   // testConfig will hold the JSON payload uploaded by the operator
   const [testConfig, setTestConfig] = useState(null);
+  const [configIdInput, setConfigIdInput] = useState('');
   // language can be changed by the candidate inside the code editor while taking the test
   const [language, setLanguage] = useState('javascript');
   
@@ -306,6 +307,57 @@ export default function AITestInterface() {
           </div>
           
           <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Or start by stored Config ID</label>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="text"
+                  placeholder="cfg_..."
+                  value={configIdInput}
+                  onChange={(e) => setConfigIdInput(e.target.value)}
+                  className="border rounded px-2 py-1 text-sm w-full"
+                />
+                <button
+                  onClick={async () => {
+                    if (!configIdInput || configIdInput.trim() === '') {
+                      alert('Please enter a configId');
+                      return;
+                    }
+                    setLoading(true);
+                    try {
+                      // Start session by configId
+                      const payload = { configId: configIdInput.trim(), language };
+                      const response = await apiService.startTestSession(payload);
+                      setSessionId(response.sessionId);
+                      setCandidateName(response.candidateName || '');
+                      setCurrentQuestion(response.question);
+                      setQuestionNumber(response.questionNumber || 1);
+                      setTotalQuestions(response.totalQuestions || (response.questions && response.questions.length) || 0);
+                      setTestState('active');
+                      setTimeLeft(response.question && response.question.timeLimit ? response.question.timeLimit : 300);
+                      setTimeSpent(0);
+                      setIsTimerActive(true);
+                      questionStartTimeRef.current = Date.now();
+
+                      const q = response.question || {};
+                      const fnName = q.functionName || null;
+                      const initialTemplate = (q.signature && q.language && q.language.toLowerCase() === language.toLowerCase())
+                        ? q.signature
+                        : (fnName ? buildTemplateWithFunction(fnName, language) : getDefaultTemplate(language));
+                      setCode(initialTemplate);
+                    } catch (err) {
+                      console.error('Failed to start by configId:', err);
+                      alert('Failed to start test with provided configId.');
+                    }
+                    setLoading(false);
+                  }}
+                  className="bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
+                >
+                  Start
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Paste a stored config ID to start the test directly from the DB.</p>
+            </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Upload Test Configuration (JSON)
