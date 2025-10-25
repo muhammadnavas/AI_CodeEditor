@@ -79,419 +79,59 @@ export default function AITestInterface() {
     }
     setLoading(false);
   };
-
-  // Helper function to get default code template
-  const getDefaultTemplate = (lang) => {
-    const templates = {
-      javascript: '// Write your JavaScript solution here\nfunction solutionName() {\n  // Your code here\n}',
-      python: '# Write your Python solution here\ndef solution_name():\n    # Your code here\n    pass',
-      java: '// Write your Java solution here\n// All necessary imports are already available\npublic class Solution {\n    public static void solutionName() {\n        // Your code here\n    }\n}',
-      cpp: '// Write your C++ solution here\n// All necessary headers are already included\nvoid solutionName() {\n    // Your code here\n}',
-      typescript: '// Write your TypeScript solution here\nfunction solutionName(): void {\n  // Your code here\n}'
-    };
-    return templates[lang] || templates.javascript;
-  };
-
-  // Build a template matching a given function name for a language
-  const buildTemplateWithFunction = (fnName, lang) => {
-    if (!fnName) return getDefaultTemplate(lang);
-    switch ((lang || 'javascript').toLowerCase()) {
-      case 'python':
-        return `def ${fnName}(*args):\n    # your code here\n    pass`;
-      case 'java':
-        return `public class Solution {\n    public static Object ${fnName}(/* params */) {\n        // your code here\n        return null;\n    }\n}`;
-      case 'cpp':
-      case 'c++':
-        return `#include <bits/stdc++.h>\nusing namespace std;\n\n// ${fnName} implementation\nvoid ${fnName}() {\n    // your code here\n}`;
-      case 'typescript':
-        return `function ${fnName}(...args: any[]): any {\n  // your code here\n}`;
-      case 'javascript':
-      default:
-        return `function ${fnName}(...args) {\n  // your code here\n}`;
-    }
-  };
-
-  // Timer effect
-  useEffect(() => {
-    if (isTimerActive && timeLeft > 0 && testState === 'active') {
-      timerRef.current = setTimeout(() => {
-        setTimeLeft(prev => prev - 1);
-        setTimeSpent(prev => prev + 1);
-      }, 1000);
-    } else if (timeLeft === 0 && !autoSubmitted) {
-      handleTimeOut();
-    }
-
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-    };
-  }, [timeLeft, isTimerActive, testState, autoSubmitted]);
-
-  // Auto-start when a configId is present in the URL query params (e.g., ?configId=cfg_...&language=python)
+  // Simplified setup: wait for server to inject candidate/config id or for the embedding to call window.startCodingTest
+  // Expose a global function so external systems can start the test programmatically.
   useEffect(() => {
     try {
-      const params = new URLSearchParams(window.location.search);
-      const cfg = params.get('configId') || params.get('configid') || params.get('cfg');
-      const langParam = params.get('language') || params.get('lang');
-      const cand = params.get('candidateId') || params.get('candidateid') || params.get('candidate');
-      if (cfg) {
-        // If a configId is present, auto-start the test
-        startByConfigId(cfg, langParam || undefined);
-      } else if (cand) {
-        // If a candidateId is present, auto-start by candidateId
-        startByCandidateId(cand, langParam || undefined);
-      }
+      // attach a simple starter on window
+      window.startCodingTest = async (arg) => {
+        if (!arg) return;
+        if (typeof arg === 'string') {
+          await startByCandidateId(arg, undefined);
+          return;
+        }
+        if (typeof arg === 'object') {
+          if (arg.candidateId) {
+            await startByCandidateId(arg.candidateId, arg.language);
+            return;
+          }
+          if (arg.configId) {
+            await startByConfigId(arg.configId, arg.language);
+            return;
+          }
+        }
+      };
     } catch (e) {
-      // ignore (e.g., server-side render or invalid URL)
+      // ignore
     }
+    return () => {
+      try { delete window.startCodingTest; } catch (e) {}
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start a session by candidateId helper (reusable)
-  const startByCandidateId = async (candidateIdParam, langParam) => {
-    if (!candidateIdParam) return;
-    setLoading(true);
+  // Auto-start when server injects globals like window.__CANDIDATE_ID__ or window.__CONFIG_ID__
+  useEffect(() => {
     try {
-      const payload = { candidateId: candidateIdParam, language: langParam || language };
-      const response = await apiService.startTestSession(payload);
-      initializeSessionFromResponse(response, langParam || language);
-    } catch (err) {
-      console.error('Failed to start by candidateId:', err);
-      alert('Failed to start test with provided candidateId.');
-    }
-    setLoading(false);
-  };
-
-  // Start test session by sending the uploaded JSON payload to the backend.
-  const handleStartTest = async () => {
-    if (!testConfig) {
-      alert('Please upload the test configuration JSON file before starting the test.');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      // send the entire testConfig object to backend, but allow explicit language override from the UI
-      const payload = { ...testConfig, language };
-  const response = await apiService.startTestSession(payload);
-
-      setSessionId(response.sessionId);
-      setCandidateName(response.candidateName || testConfig.candidateName || '');
-      setCurrentQuestion(response.question);
-      setQuestionNumber(response.questionNumber || 1);
-      setTotalQuestions(response.totalQuestions || (response.questions && response.questions.length) || 0);
-      setTestState('active');
-
-  // Initialize timer
-  setTimeLeft(300); // default 5 minutes per question (backend can override)
-      setTimeSpent(0);
-      setIsTimerActive(true);
-      questionStartTimeRef.current = Date.now();
-
-      // Set initial code template if provided
-      // Prefer server-provided signature if it matches language; otherwise build template from functionName
-      const q = response.question || {};
-      const fnName = q.functionName || null;
-      const initialTemplate = (q.signature && q.language && q.language.toLowerCase() === language.toLowerCase())
-        ? q.signature
-        : (fnName ? buildTemplateWithFunction(fnName, language) : getDefaultTemplate(language));
-      setCode(initialTemplate);
-
-    } catch (error) {
-      console.error('Failed to start test:', error);
-      alert('Failed to start test. Please try again.');
-    }
-    setLoading(false);
-  };
-
-  // Handle code testing with sample cases
-  const handleRunCode = async () => {
-    if (!code.trim()) {
-      setSampleTestResults({ error: 'Please write some code before running.' });
-      setShowingSampleResults(true);
-      setIsResultsPanelExpanded(true);
-      return;
-    }
-
-    setRunLoading(true);
-    setShowingSampleResults(false);
-    // Auto-expand results panel when running code
-    setIsResultsPanelExpanded(true);
-    
-    try {
-      // Test code with sample test cases only
-      const response = await apiService.testCode(sessionId, code, questionNumber);
-      
-      setSampleTestResults(response);
-      setShowingSampleResults(true);
-      
-      // Update results for current question
-      const updatedResults = [...allQuestionResults];
-      updatedResults[questionNumber - 1] = {
-        questionNumber,
-        type: 'sample',
-        results: response,
-        timestamp: new Date()
-      };
-      setAllQuestionResults(updatedResults);
-      
-    } catch (error) {
-      console.error('Failed to test code:', error);
-      setSampleTestResults({ error: 'Failed to test code. Please try again.' });
-      setShowingSampleResults(true);
-    }
-    setRunLoading(false);
-  };
-
-  // Handle code submission and analysis
-  const handleSubmitCode = async () => {
-    if (!code.trim()) {
-      setFeedback('Please write some code before submitting.');
-      return;
-    }
-
-    setSubmitLoading(true);
-    try {
-      // Submit code for full analysis
-      const currentTimeSpent = Math.floor((Date.now() - questionStartTimeRef.current) / 1000);
-      const response = await apiService.submitCode(sessionId, code, questionNumber, currentTimeSpent);
-      
-      setAnalysis(response.analysis);
-      setShowingResult(true);
-      setShowingSampleResults(false); // Hide sample results when submitting
-      setIsResultsPanelExpanded(true);
-      
-      // Update results for current question with submission data
-      const updatedResults = [...allQuestionResults];
-      updatedResults[questionNumber - 1] = {
-        questionNumber,
-        type: 'submission',
-        results: response,
-        analysis: response.analysis,
-        timestamp: new Date(),
-        timeSpent: currentTimeSpent
-      };
-      setAllQuestionResults(updatedResults);
-      
-      // Auto-correct if needed
-      if (response.analysis.status === 'incorrect' && response.analysis.correctedCode) {
-        setFeedback(`Your code has issues. Here's the corrected version: ${response.analysis.feedback}`);
-      } else if (response.analysis.status === 'correct') {
-        setFeedback('Excellent! Your solution is correct.');
-      } else {
-        setFeedback(response.analysis.feedback || 'Code analyzed.');
+      const cand = typeof window !== 'undefined' ? window.__CANDIDATE_ID__ : null;
+      const cfg = typeof window !== 'undefined' ? window.__CONFIG_ID__ : null;
+      const lang = typeof window !== 'undefined' ? (window.__CANDIDATE_LANGUAGE__ || window.__CANDIDATE_LANG__) : null;
+      if (cfg) {
+        startByConfigId(cfg, lang || undefined);
+      } else if (cand) {
+        startByCandidateId(cand, lang || undefined);
       }
-      
-      // Auto-move to next question after 3 seconds if correct or show correction
-      setTimeout(() => {
-        if (response.nextQuestion) {
-          moveToNextQuestion(response.nextQuestion, response.questionNumber);
-        } else if (response.testComplete) {
-          completeTest();
-        }
-      }, 3000);
-      
-    } catch (error) {
-      console.error('Failed to submit code:', error);
-      setFeedback('Failed to submit code. Please try again.');
+    } catch (e) {
+      // ignore
     }
-    setSubmitLoading(false);
-  };
-
-  // Handle timeout
-  const handleTimeOut = async () => {
-    setAutoSubmitted(true);
-    setIsTimerActive(false);
-    setSubmitLoading(true);
-    
-    try {
-      const response = await apiService.timeoutQuestion(sessionId, questionNumber);
-      
-      setFeedback('Time expired for this question! Moving to the next question...');
-      setShowingResult(true);
-      setShowingSampleResults(false);
-      
-      setTimeout(() => {
-        if (response.nextQuestion) {
-          moveToNextQuestion(response.nextQuestion, response.questionNumber);
-        } else if (response.testComplete) {
-          completeTest();
-        }
-      }, 2000);
-      
-    } catch (error) {
-      console.error('Failed to handle timeout:', error);
-    }
-    setSubmitLoading(false);
-  };
-
-  // Move to next question
-  const moveToNextQuestion = (nextQuestion, nextQuestionNumber) => {
-    setCurrentQuestion(nextQuestion);
-    setQuestionNumber(nextQuestionNumber);
-    setCode(nextQuestion.signature || getDefaultTemplate(language));
-    
-    // Reset timer for new question
-    setTimeLeft(300);
-    setTimeSpent(0);
-    setIsTimerActive(true);
-    setAutoSubmitted(false);
-    setShowingResult(false);
-    setShowingSampleResults(false);
-    setSampleTestResults(null);
-    setFeedback('');
-    setAnalysis(null);
-    // Keep results panel expanded to show history
-    
-    questionStartTimeRef.current = Date.now();
-  };
-
-  // Complete test
-  const completeTest = async () => {
-    setTestState('completed');
-    setIsTimerActive(false);
-    
-    try {
-      const results = await apiService.getTestResults(sessionId);
-      setTestResults(results);
-    } catch (error) {
-      console.error('Failed to get results:', error);
-    }
-  };
-
-  // Format time display
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Setup screen
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   if (testState === 'setup') {
     return (
       <div className="max-w-2xl mx-auto p-6">
-        <div className="bg-white rounded-lg shadow-md p-8">
-          <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Coding Test</h1>
-            <p className="text-gray-600">Complete 2 coding challenges - 5 minutes per question</p>
-          </div>
-          
-          <div className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Or start by stored Config ID</label>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  placeholder="cfg_..."
-                  value={configIdInput}
-                  onChange={(e) => setConfigIdInput(e.target.value)}
-                  className="border rounded px-2 py-1 text-sm w-full"
-                />
-                <button
-                  onClick={async () => {
-                    if (!configIdInput || configIdInput.trim() === '') {
-                      alert('Please enter a configId');
-                      return;
-                    }
-                    await startByConfigId(configIdInput.trim(), language);
-                  }}
-                  className="bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
-                >
-                  Start
-                </button>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">Paste a stored config ID to start the test directly from the DB.</p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Or start by Candidate ID</label>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  placeholder="candidate_12345"
-                  value={candidateIdInput}
-                  onChange={(e) => setCandidateIdInput(e.target.value)}
-                  className="border rounded px-2 py-1 text-sm w-full"
-                />
-                <button
-                  onClick={async () => {
-                    if (!candidateIdInput || candidateIdInput.trim() === '') {
-                      alert('Please enter a candidateId');
-                      return;
-                    }
-                    await startByCandidateId(candidateIdInput.trim(), language);
-                  }}
-                  className="bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
-                >
-                  Start
-                </button>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">Paste the candidate id provided by your system to fetch the assessment and start the test.</p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Upload Test Configuration (JSON)
-              </label>
-                <div className="flex items-center space-x-3 mb-3">
-                  <label className="text-sm font-medium text-gray-700">Select language:</label>
-                  <select
-                    value={language}
-                    onChange={(e) => setLanguage(e.target.value)}
-                    className="border rounded px-2 py-1 text-sm"
-                  >
-                    <option value="javascript">JavaScript</option>
-                    <option value="typescript">TypeScript</option>
-                    <option value="python">Python</option>
-                    <option value="java">Java</option>
-                    <option value="cpp">C++</option>
-                  </select>
-                  <p className="text-xs text-gray-500">(This sets the candidate's initial language; candidates can change it in the editor.)</p>
-                </div>
-              <input
-                type="file"
-                accept="application/json"
-                onChange={async (e) => {
-                  const file = e.target.files && e.target.files[0];
-                  if (!file) return;
-                  try {
-                    const text = await file.text();
-                    const json = JSON.parse(text);
-                    setTestConfig(json);
-                  } catch (err) {
-                    console.error('Invalid JSON file:', err);
-                    alert('Invalid JSON file. Please upload a valid test configuration.');
-                    setTestConfig(null);
-                  }
-                }}
-                className="w-full"
-              />
-              <p className="text-xs text-gray-500 mt-1">Upload a JSON file containing the test definition (questions, candidateName, settings). Candidate can choose language in the code editor during the test.</p>
-            </div>
-            
-            <div className="bg-blue-50 p-4 rounded-lg">
-              <h3 className="font-semibold text-blue-900 mb-2">LeetCode-Style Coding Test:</h3>
-              <ul className="text-sm text-blue-800 space-y-1">
-                <li>• <strong>5 minutes per question</strong> (2 questions total)</li>
-                <li>• <strong>Run Code:</strong> Test with sample cases (visible inputs/outputs)</li>
-                <li>• <strong>Submit Code:</strong> Final evaluation with hidden test cases</li>
-                <li>• <strong>Sample tests:</strong> Help you debug and validate your logic</li>
-                <li>• <strong>Hidden tests:</strong> Cover edge cases for final scoring</li>
-              </ul>
-              <div className="mt-3 p-2 bg-blue-100 rounded text-xs">
-                <strong>💡 Tip:</strong> Use "Run Code" frequently to test your solution with sample cases, 
-                then "Submit Code" when you're confident it handles all scenarios.
-              </div>
-            </div>
-            
-            <button
-              onClick={handleStartTest}
-              disabled={loading || !testConfig}
-              className="w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
-            >
-              {loading ? 'Starting Test...' : (testConfig ? 'Start Test (using uploaded JSON)' : 'Upload test JSON to start')}
-            </button>
-          </div>
+        <div className="bg-white rounded-lg shadow-md p-8 text-center">
+          <h2 className="text-lg font-medium text-gray-900">Waiting to start test</h2>
+          <p className="text-sm text-gray-600 mt-2">This interface will start automatically when your system injects <code>window.__CANDIDATE_ID__</code> or calls <code>window.startCodingTest()</code>.</p>
         </div>
       </div>
     );
