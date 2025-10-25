@@ -33,7 +33,35 @@ function sanitizeLog(obj) {
 const testSessions = new Map();
 
 // DB-backed stored test configs
-const { getConfigsCollection } = require('../services/db');
+const { getConfigsCollection, getDb } = require('../services/db');
+
+// Persist test results to DB or local file when DB unavailable
+const fs = require('fs');
+const path = require('path');
+
+async function saveTestResult(doc) {
+  try {
+    const database = getDb();
+    const colName = process.env.MONGO_RESULTS_COLLECTION || 'test_results';
+    const col = database.collection(colName);
+    await col.insertOne(Object.assign({}, doc, { createdAt: new Date() }));
+    console.debug('[DB] Saved test result to collection', colName);
+    return true;
+  } catch (e) {
+    // Fallback: write to local temp folder for dev when DB not available
+    try {
+      const tmpDir = path.join(__dirname, '..', '..', 'temp');
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+      const fname = `test_result_${doc.sessionId || 'anon'}_${Date.now()}.json`;
+      fs.writeFileSync(path.join(tmpDir, fname), JSON.stringify(Object.assign({}, doc, { createdAt: new Date() }), null, 2));
+      console.warn('[DB-Fallback] Wrote test result to', fname);
+      return false;
+    } catch (fsErr) {
+      console.error('Failed to persist test result to DB and fallback file:', fsErr && fsErr.message);
+      return false;
+    }
+  }
+}
 
 // Helper: extract function name from a signature/template - reused by multiple endpoints
 function extractFunctionName(signature, lang) {
@@ -622,6 +650,21 @@ router.post('/test-code', async (req, res) => {
     }
 
     console.log('[API] test-code - sampleTests count=', (sampleTestResults && sampleTestResults.length) || 0, 'error=', !!error);
+    // Persist sample test results (best-effort)
+    try {
+      await saveTestResult({
+        type: 'sample',
+        sessionId,
+        questionNumber,
+        sampleTestResults,
+        output,
+        error,
+        message: error ? 'Execution error' : 'Sample tests completed',
+      });
+    } catch (persistErr) {
+      console.warn('Failed to persist sample test result:', persistErr && persistErr.message);
+    }
+
     res.json({
       output,
       error,
@@ -650,7 +693,7 @@ router.post('/submit-code', async (req, res) => {
     }
 
     // Analyze the submitted code
-    const analysis = await analyzeCodeSubmission(code, session.language, session.questions[questionNumber - 1]);
+  const analysis = await analyzeCodeSubmission(code, session.language, session.questions[questionNumber - 1]);
     console.log('[API] submit-code analysis status=', analysis && analysis.status, 'score=', analysis && analysis.score);
     
     // Store result
@@ -661,6 +704,20 @@ router.post('/submit-code', async (req, res) => {
       analysis,
       timestamp: new Date()
     });
+
+    // Persist final test result (analysis + code) for later retrieval and AI consumption
+    try {
+      await saveTestResult({
+        type: 'final',
+        sessionId,
+        questionNumber,
+        code,
+        timeSpent,
+        analysis
+      });
+    } catch (persistErr) {
+      console.warn('Failed to persist final test result:', persistErr && persistErr.message);
+    }
 
     // Check if we should move to next question
     let nextQuestion = null;
@@ -2922,7 +2979,21 @@ async function analyzeCodeSubmission(code, language, question) {
       executionResult = { error: execError.message };
     }
 
-    const prompt = `Analyze this ${language} code submission for a coding interview:
+    // Optionally run automatic tests BEFORE asking the AI so the AI can see concrete test results
+    let precomputedTestResults = null;
+    try {
+      if (question.testCases && question.testCases.length > 0 && !executionResult?.error) {
+        const testsToRun = question.hiddenTests && question.hiddenTests.length > 0
+          ? [...(question.sampleTests || []), ...question.hiddenTests]
+          : question.testCases || [];
+        precomputedTestResults = await runAutomaticTests(code, language, testsToRun, question.functionName || null);
+      }
+    } catch (testRunErr) {
+      console.warn('Precomputed test run failed:', testRunErr && testRunErr.message);
+      precomputedTestResults = null;
+    }
+
+  const prompt = `Analyze this ${language} code submission for a coding interview:
     
     Problem: ${question.description || question.title}
     ${question.examples ? `Examples: ${Array.isArray(question.examples) ? question.examples.join('\n') : question.examples}` : ''}
@@ -2933,6 +3004,8 @@ async function analyzeCodeSubmission(code, language, question) {
     \`\`\`
     
     Execution Result: ${executionResult ? JSON.stringify(executionResult) : 'Not executed'}
+    
+  Test Results: ${precomputedTestResults ? JSON.stringify(precomputedTestResults) : 'Not run'}
     
     IMPORTANT INSTRUCTIONS:
     - IGNORE any missing import statements or library imports
@@ -3020,17 +3093,19 @@ async function analyzeCodeSubmission(code, language, question) {
       }
     }
 
-    // Run automatic test cases if available
+    // Run or reuse automatic test cases for final analysis
     if (question.testCases && question.testCases.length > 0 && !executionResult?.error) {
-      // Use hidden tests for final analysis (includes both sample and hidden tests)
-      const testsToRun = question.hiddenTests && question.hiddenTests.length > 0 
-        ? [...(question.sampleTests || []), ...question.hiddenTests]
-        : question.testCases || [];
-      const testResults = await runAutomaticTests(code, language, testsToRun, question.functionName || null);
+      let testResults = precomputedTestResults;
+      if (!testResults) {
+        const testsToRun = question.hiddenTests && question.hiddenTests.length > 0 
+          ? [...(question.sampleTests || []), ...question.hiddenTests]
+          : question.testCases || [];
+        testResults = await runAutomaticTests(code, language, testsToRun, question.functionName || null);
+      }
       analysis.testResults = testResults;
       analysis.testsPassed = testResults.filter(t => t.passed).length;
       analysis.totalTests = testResults.length;
-      
+
       // Adjust score based on test results
       if (analysis.testsPassed === analysis.totalTests) {
         analysis.status = 'correct';

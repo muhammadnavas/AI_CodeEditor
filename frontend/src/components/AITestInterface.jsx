@@ -88,13 +88,31 @@ export default function AITestInterface() {
 
   // Handler: run code against sample tests (calls backend /test-code)
   const handleRunCode = async () => {
-    if (!sessionId || !currentQuestion) return;
+    if (!sessionId || !currentQuestion) {
+      console.debug('[AITestInterface] handleRunCode called without active session or question', { sessionId, currentQuestion });
+      alert('No active test session. Please start the test first.');
+      return;
+    }
     setRunLoading(true);
     try {
       const resp = await apiService.testCode(sessionId, code, questionNumber);
-      // backend returns { output, error, sampleTests, message }
-      setSampleTestResults(resp);
+      // Debug log the raw response to aid troubleshooting
+      console.debug('[AITestInterface] testCode response:', resp);
+
+      // Backend should return an object { output, error, sampleTests, message }
+      // Normalize in case older backend returns an array of tests directly
+      let normalized = resp;
+      if (Array.isArray(resp)) {
+        normalized = { sampleTests: resp };
+      } else if (resp && resp.sampleTests && !Array.isArray(resp.sampleTests)) {
+        // defensive: ensure sampleTests is an array
+        normalized = { ...resp, sampleTests: Array.isArray(resp.sampleTests) ? resp.sampleTests : [resp.sampleTests] };
+      }
+
+      setSampleTestResults(normalized);
       setShowingSampleResults(true);
+      // auto-expand panel so results are visible
+      setIsResultsPanelExpanded(true);
     } catch (err) {
       console.error('Run code error', err);
       alert('Failed to run code: ' + (err.message || err));
@@ -135,6 +153,10 @@ export default function AITestInterface() {
           ? resp.nextQuestion.signature
           : (fnName ? buildTemplateWithFunction(fnName, resp.nextQuestion.language || language) : getDefaultTemplate(resp.nextQuestion.language || language));
         setCode(newTemplate);
+        // clear previous result panels so candidate can continue
+        setShowingResult(false);
+        setShowingSampleResults(false);
+        setIsResultsPanelExpanded(false);
       }
     } catch (err) {
       console.error('Submit code error', err);
@@ -437,7 +459,7 @@ export default function AITestInterface() {
               
               <button
                 onClick={handleRunCode}
-                disabled={runLoading || !code.trim()}
+                disabled={runLoading || !code.trim() || !sessionId || !currentQuestion}
                 className="bg-blue-600 text-white px-6 py-2.5 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-semibold shadow-sm transition-colors"
               >
                 {runLoading ? 'Testing...' : 'Run Code'}
@@ -445,7 +467,7 @@ export default function AITestInterface() {
               
               <button
                 onClick={handleSubmitCode}
-                disabled={submitLoading || !code.trim() || showingResult}
+                disabled={submitLoading || !code.trim()}
                 className="bg-green-600 text-white px-6 py-2.5 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-semibold shadow-sm transition-colors"
               >
                 {submitLoading ? 'Submitting...' : 'Submit Code'}
