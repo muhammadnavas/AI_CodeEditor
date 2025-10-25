@@ -110,6 +110,33 @@ export default function AITestInterface() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Listen for postMessage from embedding parent/other apps so they can start the test
+  // Example: parent.postMessage({ type: 'startTest', candidateId: 'cand_123', language: 'javascript' }, '*')
+  useEffect(() => {
+    const onMessage = (event) => {
+      try {
+        const msg = event?.data;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'startTest') {
+          if (msg.configId) {
+            startByConfigId(msg.configId, msg.language);
+            return;
+          }
+          if (msg.candidateId) {
+            startByCandidateId(msg.candidateId, msg.language);
+            return;
+          }
+        }
+      } catch (e) {
+        // ignore malformed messages
+      }
+    };
+
+    window.addEventListener('message', onMessage, false);
+    return () => window.removeEventListener('message', onMessage, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-start when server injects globals like window.__CANDIDATE_ID__ or window.__CONFIG_ID__
   useEffect(() => {
     try {
