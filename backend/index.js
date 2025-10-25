@@ -23,7 +23,7 @@ app.use(apiLimiter);
 const defaultFrontend = process.env.FRONTEND_URL || 'https://ai-code-editor-psi-two.vercel.app';
 const rawOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',')
-  : ['http://localhost:3000', 'http://localhost:5000', defaultFrontend];
+  : ['http://localhost:3000', , defaultFrontend];
 
 // Normalization helper: trim, remove wrapping quotes, remove trailing slashes, lowercase
 function normalizeOrigin(o) {
@@ -41,8 +41,23 @@ function normalizeOrigin(o) {
 const allowedOrigins = rawOrigins.map(normalizeOrigin).filter(Boolean);
 console.log('[CORS] Allowed origins (normalized):', allowedOrigins);
 
+// In development, ensure localhost origins are allowed for local frontend/dev servers
+if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
+  const devOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5000'];
+  let added = [];
+  for (const o of devOrigins) {
+    const n = normalizeOrigin(o);
+    if (n && !allowedOrigins.includes(n)) {
+      allowedOrigins.push(n);
+      added.push(n);
+    }
+  }
+  if (added.length > 0) console.log('[CORS] Development: added local origins:', added);
+}
+
 const corsOptions = {
-  origin: function (origin, callback) {
+  origin: (process.env.NODE_ENV || '').toLowerCase() !== 'production' ? true : function (origin, callback) {
+    // Production: strict origin checking
     // Allow requests with no origin (server-to-server, curl, mobile, etc.)
     if (!origin) return callback(null, true);
 
@@ -76,9 +91,8 @@ app.use(cors(corsOptions));
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin) console.log(`[CORS] Incoming request from origin=${origin} path=${req.path}`);
-
-  // If origin is present and not allowed, return 403 with JSON for easier debugging in server logs.
-  if (origin) {
+  // In production, if origin is present and not allowed, return 403 with JSON for easier debugging in server logs.
+  if ((process.env.NODE_ENV || '').toLowerCase() === 'production' && origin) {
     const normalizedIncoming = normalizeOrigin(origin);
     if (!allowedOrigins.includes('*') && !allowedOrigins.includes(normalizedIncoming)) {
       res.status(403).json({ error: 'CORS origin blocked', origin: origin });

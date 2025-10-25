@@ -6,6 +6,29 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Small helper to avoid logging extremely large payloads or secrets
+function sanitizeLog(obj) {
+  try {
+    const clone = JSON.parse(JSON.stringify(obj));
+    // redact any obvious secret keys
+    const redactKeys = ['apiKey', 'OPENAI_API_KEY', 'password', 'token', 'accessToken', 'MONGO_URI'];
+    function walk(o) {
+      if (!o || typeof o !== 'object') return;
+      for (const k of Object.keys(o)) {
+        if (redactKeys.includes(k) || redactKeys.includes(String(k).toUpperCase())) {
+          o[k] = '[REDACTED]';
+        } else if (typeof o[k] === 'object') {
+          walk(o[k]);
+        }
+      }
+    }
+    walk(clone);
+    return clone;
+  } catch (e) {
+    return '[unserializable]';
+  }
+}
+
 // Test sessions storage (in production, use a database)
 const testSessions = new Map();
 
@@ -244,10 +267,11 @@ router.post('/start-session', async (req, res) => {
     // Support two modes:
     // 1) Legacy: { candidateName, difficulty, language, questionBankId, totalQuestions }
     // 2) Uploaded test config: { testConfig: { candidateName, timePerQuestion, difficulty, language, questions: [...] } }
-    const body = req.body || {};
+  const body = req.body || {};
+  console.log('[API] POST /api/test/start-session - body:', sanitizeLog(body));
 
     // If an operator uploaded a full test JSON, prefer that
-    const uploadedConfig = body.testConfig || (Array.isArray(body.questions) ? {
+    let uploadedConfig = body.testConfig || (Array.isArray(body.questions) ? {
       candidateName: body.candidateName,
       difficulty: body.difficulty,
       language: body.language,
@@ -321,8 +345,11 @@ router.post('/start-session', async (req, res) => {
         const configs = getConfigsCollection();
         const storedDoc = await configs.findOne({ configId: body.configId });
         if (storedDoc && storedDoc.normalized) {
+          console.log('[API] Found stored config for configId=', body.configId);
           // Merge stored config into uploadedConfig variable for reuse
           Object.assign(uploadedConfig || (uploadedConfig = {}), storedDoc.normalized);
+        } else {
+          console.log('[API] No stored config found for configId=', body.configId);
         }
       } catch (err) {
         console.warn('Failed to load config from DB for configId=', body.configId, err && err.message);
@@ -335,7 +362,10 @@ router.post('/start-session', async (req, res) => {
         const configs = getConfigsCollection();
         const docs = await configs.find({ 'normalized.candidateId': body.candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
         if (docs && docs.length > 0 && docs[0].normalized) {
+          console.log('[API] Found stored config for candidateId=', body.candidateId);
           Object.assign(uploadedConfig || (uploadedConfig = {}), docs[0].normalized);
+        } else {
+          console.log('[API] No stored config found for candidateId=', body.candidateId);
         }
       } catch (err) {
         console.warn('Failed to load config from DB for candidateId=', body.candidateId, err && err.message);
@@ -377,6 +407,7 @@ router.post('/start-session', async (req, res) => {
       testSessions.set(sessionId, session);
 
       const firstQuestion = session.questions[0];
+      console.log('[API] Started session', sessionId, 'candidate=', session.candidateName, 'totalQuestions=', session.totalQuestions);
 
       return res.json({
         sessionId,
@@ -389,6 +420,7 @@ router.post('/start-session', async (req, res) => {
 
     // No uploaded/stored config found — do not generate mock questions.
     // This system requires that the test questions be provided via stored JSON (configId or candidateId).
+    console.log('[API] start-session: no stored or uploaded config provided');
     return res.status(404).json({ error: 'No stored test configuration found. Provide a configId or candidateId that maps to a stored test JSON.' });
 
   } catch (error) {
@@ -404,6 +436,7 @@ router.post('/start-session', async (req, res) => {
 router.post('/test-code', async (req, res) => {
   try {
     const { sessionId, code, questionNumber } = req.body;
+    console.log('[API] POST /api/test/test-code - sessionId=', sessionId, 'questionNumber=', questionNumber);
     
     const session = testSessions.get(sessionId);
     if (!session || !session.isActive) {
@@ -455,6 +488,7 @@ router.post('/test-code', async (req, res) => {
       error = execError.message;
     }
 
+    console.log('[API] test-code - sampleTests count=', (sampleTestResults && sampleTestResults.length) || 0, 'error=', !!error);
     res.json({
       output,
       error,
@@ -475,7 +509,8 @@ router.post('/test-code', async (req, res) => {
 router.post('/submit-code', async (req, res) => {
   try {
     const { sessionId, code, questionNumber, timeSpent } = req.body;
-    
+    console.log('[API] POST /api/test/submit-code - sessionId=', sessionId, 'questionNumber=', questionNumber);
+
     const session = testSessions.get(sessionId);
     if (!session || !session.isActive) {
       return res.status(400).json({ error: 'Invalid or expired session' });
@@ -483,6 +518,7 @@ router.post('/submit-code', async (req, res) => {
 
     // Analyze the submitted code
     const analysis = await analyzeCodeSubmission(code, session.language, session.questions[questionNumber - 1]);
+    console.log('[API] submit-code analysis status=', analysis && analysis.status, 'score=', analysis && analysis.score);
     
     // Store result
     session.results.push({
@@ -535,6 +571,7 @@ router.post('/submit-code', async (req, res) => {
 router.post('/timeout-question', async (req, res) => {
   try {
     const { sessionId, questionNumber } = req.body;
+    console.log('[API] POST /api/test/timeout-question - sessionId=', sessionId, 'questionNumber=', questionNumber);
     
     const session = testSessions.get(sessionId);
     if (!session || !session.isActive) {
@@ -769,6 +806,7 @@ router.get('/example-config', async (req, res) => {
 router.post('/upload-config', async (req, res) => {
   try {
     const payload = req.body;
+    console.log('[API] POST /api/test/upload-config - received payload keys:', payload && Object.keys(payload));
     if (!payload || typeof payload !== 'object') {
       return res.status(400).json({ error: 'Missing JSON body' });
     }
@@ -806,20 +844,21 @@ router.post('/upload-config', async (req, res) => {
       })
     };
 
-    // Store normalized config in MongoDB and return id
+  // Store normalized config in MongoDB and return id
     const configId = `cfg_${Date.now()}_${Math.random().toString(36).substr(2,8)}`;
     // Attach candidateId if present in payload or metadata
     normalized.candidateId = payload.candidateId || payload.metadata && payload.metadata.candidateId || normalized.candidateId || null;
     try {
       const configs = getConfigsCollection();
       await configs.insertOne({ configId, normalized, createdAt: new Date() });
+      console.log('[API] upload-config: persisted configId=', configId, 'candidateId=', normalized.candidateId || null);
     } catch (err) {
       console.error('Failed to persist config to DB:', err && err.message);
       // Fallback: still return id and normalized (caller may retry storing)
     }
 
     // Return normalized config and id
-    res.json({ success: true, configId, normalized });
+  res.json({ success: true, configId, normalized });
   } catch (error) {
     console.error('Upload config error:', error);
     res.status(500).json({ error: 'Failed to upload config', details: error.message });
@@ -830,6 +869,7 @@ router.post('/upload-config', async (req, res) => {
 router.post('/config', async (req, res) => {
   try {
     const payload = req.body;
+    console.log('[API] POST /api/test/config - payload keys:', payload && Object.keys(payload));
     if (!payload || !Array.isArray(payload.questions) || payload.questions.length === 0) {
       return res.status(400).json({ error: 'Invalid payload; must include questions array' });
     }
@@ -862,6 +902,7 @@ router.post('/config', async (req, res) => {
     try {
       const configs = getConfigsCollection();
       await configs.insertOne({ configId, normalized, createdAt: new Date() });
+      console.log('[API] config: persisted configId=', configId, 'candidateId=', normalized.candidateId || null);
     } catch (err) {
       console.error('Failed to persist config to DB:', err && err.message);
     }
@@ -876,9 +917,11 @@ router.post('/config', async (req, res) => {
 router.get('/config/:configId', async (req, res) => {
   try {
     const { configId } = req.params;
+    console.log('[API] GET /api/test/config/:configId - fetching', configId);
     const configs = getConfigsCollection();
     const doc = await configs.findOne({ configId });
     if (!doc) {
+      console.log('[API] GET /api/test/config/:configId - not found', configId);
       return res.status(404).json({ error: 'Config not found' });
     }
     res.json(doc.normalized || doc);
@@ -892,12 +935,14 @@ router.get('/config/:configId', async (req, res) => {
 router.get('/config/by-candidate/:candidateId', async (req, res) => {
   try {
     const { candidateId } = req.params;
+    console.log('[API] GET /api/test/config/by-candidate - candidateId=', candidateId);
     const configs = getConfigsCollection();
     const doc = await configs.find({ 'normalized.candidateId': candidateId })
       .sort({ createdAt: -1 })
       .limit(1)
       .toArray();
     if (!doc || doc.length === 0) {
+      console.log('[API] GET /api/test/config/by-candidate - not found for candidateId=', candidateId);
       return res.status(404).json({ error: 'Config not found for candidate' });
     }
     res.json(doc[0].normalized || doc[0]);
@@ -1142,6 +1187,7 @@ router.post('/question-bank/import', async (req, res) => {
 router.get('/results/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
+    console.log('[API] GET /api/test/results/:sessionId -', sessionId);
     
     const session = testSessions.get(sessionId);
     if (!session) {

@@ -44,6 +44,105 @@ export default function AITestInterface() {
   const timerRef = useRef(null);
   const questionStartTimeRef = useRef(null);
 
+  // Utility: format seconds into MM:SS
+  function formatTime(seconds) {
+    const s = Math.max(0, Math.floor(Number(seconds) || 0));
+    const m = Math.floor(s / 60);
+    const ss = s % 60;
+    return `${m}:${ss.toString().padStart(2, '0')}`;
+  }
+
+  // Minimal code templates used when question signature is not provided
+  function getDefaultTemplate(lang) {
+    switch ((lang || 'javascript').toLowerCase()) {
+      case 'python':
+        return "def solution():\n    # write your code here\n    pass";
+      case 'java':
+        return "public class Solution {\n    public static void main(String[] args) {\n        // write your code here\n    }\n}";
+      case 'cpp':
+        return "#include <bits/stdc++.h>\nusing namespace std;\nint main() {\n    // write your code here\n    return 0;\n}";
+      case 'typescript':
+        return "function solutionName(): void {\n  // your code here\n}";
+      case 'javascript':
+      default:
+        return "function solutionName() {\n  // your code here\n}";
+    }
+  }
+
+  function buildTemplateWithFunction(fnName, lang) {
+    const l = (lang || 'javascript').toLowerCase();
+    switch (l) {
+      case 'python':
+        return `def ${fnName}(*args):\n    # your code here\n    pass`;
+      case 'java':
+        return `public class Solution {\n    public static Object ${fnName}() {\n        // your code here\n        return null;\n    }\n}`;
+      case 'cpp':
+        return `// ${fnName} implementation\nvoid ${fnName}() {\n    // your code here\n}`;
+      case 'typescript':
+        return `function ${fnName}(): any {\n  // your code here\n}`;
+      case 'javascript':
+      default:
+        return `function ${fnName}() {\n  // your code here\n}`;
+    }
+  }
+
+  // Handler: run code against sample tests (calls backend /test-code)
+  const handleRunCode = async () => {
+    if (!sessionId || !currentQuestion) return;
+    setRunLoading(true);
+    try {
+      const resp = await apiService.testCode(sessionId, code, questionNumber);
+      // backend returns { output, error, sampleTests, message }
+      setSampleTestResults(resp);
+      setShowingSampleResults(true);
+    } catch (err) {
+      console.error('Run code error', err);
+      alert('Failed to run code: ' + (err.message || err));
+    }
+    setRunLoading(false);
+  };
+
+  // Handler: submit code for full analysis and move to next question
+  const handleSubmitCode = async () => {
+    if (!sessionId || !currentQuestion) return;
+    setSubmitLoading(true);
+    try {
+      // calculate time spent
+      const now = Date.now();
+      const elapsed = questionStartTimeRef.current ? Math.floor((now - questionStartTimeRef.current) / 1000) : timeSpent;
+      const resp = await apiService.submitCode(sessionId, code, questionNumber, elapsed);
+      // resp: { analysis, nextQuestion, testComplete, questionNumber, totalQuestions }
+      if (resp.analysis) setAnalysis(resp.analysis);
+      setShowingResult(true);
+
+      if (resp.testComplete) {
+        // finish
+        setTestResults(await apiService.getTestResults(sessionId));
+        setTestState('completed');
+      } else if (resp.nextQuestion) {
+        // move to next question
+        setCurrentQuestion(resp.nextQuestion);
+        setQuestionNumber(resp.questionNumber || (questionNumber + 1));
+        setTotalQuestions(resp.totalQuestions || totalQuestions);
+        // reset timer
+        setTimeLeft(resp.nextQuestion.timeLimit || 300);
+        setTimeSpent(0);
+        setIsTimerActive(true);
+        questionStartTimeRef.current = Date.now();
+        // set code template for next question
+        const fnName = resp.nextQuestion.functionName || null;
+        const newTemplate = resp.nextQuestion.signature && resp.nextQuestion.language && resp.nextQuestion.language.toLowerCase() === language.toLowerCase()
+          ? resp.nextQuestion.signature
+          : (fnName ? buildTemplateWithFunction(fnName, resp.nextQuestion.language || language) : getDefaultTemplate(resp.nextQuestion.language || language));
+        setCode(newTemplate);
+      }
+    } catch (err) {
+      console.error('Submit code error', err);
+      alert('Failed to submit code: ' + (err.message || err));
+    }
+    setSubmitLoading(false);
+  };
+
   // Helper to initialize session state from start-session response
   const initializeSessionFromResponse = (response, lang) => {
     setSessionId(response.sessionId);
@@ -76,6 +175,21 @@ export default function AITestInterface() {
     } catch (err) {
       console.error('Failed to start by configId:', err);
       alert('Failed to start test with provided configId.');
+    }
+    setLoading(false);
+  };
+  
+  // Start a session by candidateId helper
+  const startByCandidateId = async (candidateIdParam, langParam) => {
+    if (!candidateIdParam) return;
+    setLoading(true);
+    try {
+      const payload = { candidateId: candidateIdParam, language: langParam || language };
+      const response = await apiService.startTestSession(payload);
+      initializeSessionFromResponse(response, langParam || language);
+    } catch (err) {
+      console.error('Failed to start by candidateId:', err);
+      alert('Failed to start test with provided candidateId.');
     }
     setLoading(false);
   };
@@ -211,6 +325,60 @@ export default function AITestInterface() {
         <div className="bg-white rounded-lg shadow-md p-8 text-center">
           <h2 className="text-lg font-medium text-gray-900">Waiting to start test</h2>
           <p className="text-sm text-gray-600 mt-2">This interface will start automatically when your system injects <code>window.__CANDIDATE_ID__</code> or calls <code>window.startCodingTest()</code>.</p>
+
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="text-left">
+              <label className="text-sm text-gray-700">Candidate ID</label>
+              <input
+                type="text"
+                value={candidateIdInput}
+                onChange={(e) => setCandidateIdInput(e.target.value)}
+                placeholder="cand_123 or candidate id"
+                className="mt-1 w-full border rounded px-3 py-2"
+              />
+              <div className="mt-2 flex space-x-2">
+                <button
+                  onClick={() => startByCandidateId(candidateIdInput)}
+                  disabled={loading || !candidateIdInput.trim()}
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {loading ? 'Starting...' : 'Start by Candidate ID'}
+                </button>
+                <button
+                  onClick={() => { setCandidateIdInput(''); }}
+                  className="bg-gray-100 text-gray-800 px-4 py-2 rounded hover:bg-gray-200"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="text-left">
+              <label className="text-sm text-gray-700">Config ID</label>
+              <input
+                type="text"
+                value={configIdInput}
+                onChange={(e) => setConfigIdInput(e.target.value)}
+                placeholder="cfg_... (stored test id)"
+                className="mt-1 w-full border rounded px-3 py-2"
+              />
+              <div className="mt-2 flex space-x-2">
+                <button
+                  onClick={() => startByConfigId(configIdInput)}
+                  disabled={loading || !configIdInput.trim()}
+                  className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50"
+                >
+                  {loading ? 'Starting...' : 'Start by Config ID'}
+                </button>
+                <button
+                  onClick={() => { setConfigIdInput(''); }}
+                  className="bg-gray-100 text-gray-800 px-4 py-2 rounded hover:bg-gray-200"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
