@@ -111,21 +111,55 @@ export default function AITestInterface() {
   }, []);
 
   // Listen for postMessage from embedding parent/other apps so they can start the test
-  // Example: parent.postMessage({ type: 'startTest', candidateId: 'cand_123', language: 'javascript' }, '*')
+  // Examples accepted:
+  // { type: 'startTest', candidateId: 'cand_123', language: 'javascript' }
+  // { candidateId: 'cand_123' }
+  // { configId: 'cfg_abc' }
   useEffect(() => {
     const onMessage = (event) => {
       try {
-        const msg = event?.data;
-        if (!msg || typeof msg !== 'object') return;
-        if (msg.type === 'startTest') {
-          if (msg.configId) {
-            startByConfigId(msg.configId, msg.language);
+        let msg = event?.data;
+        if (!msg) return;
+        // If sender sent a JSON string, try parse it
+        if (typeof msg === 'string') {
+          try {
+            msg = JSON.parse(msg);
+          } catch (e) {
+            // not JSON, ignore
             return;
           }
-          if (msg.candidateId) {
-            startByCandidateId(msg.candidateId, msg.language);
+        }
+
+        if (typeof msg !== 'object') return;
+
+        // Accept multiple shapes / key names for compatibility
+        const candidateId = msg.candidateId || msg.candidate_id || msg.candId || msg.candidate || null;
+        const configId = msg.configId || msg.config_id || msg.cfg || null;
+        const lang = msg.language || msg.lang || msg.languageCode || null;
+
+        if (msg.type && String(msg.type).toLowerCase().includes('start')) {
+          if (configId) {
+            console.debug('[AITestInterface] postMessage start -> configId', configId, 'lang', lang);
+            startByConfigId(configId, lang);
             return;
           }
+          if (candidateId) {
+            console.debug('[AITestInterface] postMessage start -> candidateId', candidateId, 'lang', lang);
+            startByCandidateId(candidateId, lang);
+            return;
+          }
+        }
+
+        // Backwards compatibility: callers may just post { candidateId } or { configId }
+        if (configId) {
+          console.debug('[AITestInterface] postMessage configId', configId, 'lang', lang);
+          startByConfigId(configId, lang);
+          return;
+        }
+        if (candidateId) {
+          console.debug('[AITestInterface] postMessage candidateId', candidateId, 'lang', lang);
+          startByCandidateId(candidateId, lang);
+          return;
         }
       } catch (e) {
         // ignore malformed messages
@@ -139,18 +173,36 @@ export default function AITestInterface() {
 
   // Auto-start when server injects globals like window.__CANDIDATE_ID__ or window.__CONFIG_ID__
   useEffect(() => {
-    try {
-      const cand = typeof window !== 'undefined' ? window.__CANDIDATE_ID__ : null;
-      const cfg = typeof window !== 'undefined' ? window.__CONFIG_ID__ : null;
-      const lang = typeof window !== 'undefined' ? (window.__CANDIDATE_LANGUAGE__ || window.__CANDIDATE_LANG__) : null;
-      if (cfg) {
-        startByConfigId(cfg, lang || undefined);
-      } else if (cand) {
-        startByCandidateId(cand, lang || undefined);
+    // Poll for server-injected globals for a short period (useful when injection happens after client load)
+    let attempts = 0;
+    const maxAttempts = 60; // ~30 seconds at 500ms interval
+    const interval = setInterval(() => {
+      try {
+        attempts += 1;
+        const cand = typeof window !== 'undefined' ? (window.__CANDIDATE_ID__ || window.__CANDIDATEId || window.__candidate_id) : null;
+        const cfg = typeof window !== 'undefined' ? (window.__CONFIG_ID__ || window.__CONFIGId || window.__config_id) : null;
+        const lang = typeof window !== 'undefined' ? (window.__CANDIDATE_LANGUAGE__ || window.__CANDIDATE_LANG__ || window.__CANDIDATE_lang__) : null;
+        if (cfg) {
+          console.debug('[AITestInterface] Detected server-injected configId:', cfg, 'lang:', lang);
+          startByConfigId(cfg, lang || undefined);
+          clearInterval(interval);
+          return;
+        }
+        if (cand) {
+          console.debug('[AITestInterface] Detected server-injected candidateId:', cand, 'lang:', lang);
+          startByCandidateId(cand, lang || undefined);
+          clearInterval(interval);
+          return;
+        }
+        if (attempts >= maxAttempts) {
+          clearInterval(interval);
+        }
+      } catch (e) {
+        // ignore
+        if (attempts >= maxAttempts) clearInterval(interval);
       }
-    } catch (e) {
-      // ignore
-    }
+    }, 500);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   if (testState === 'setup') {
