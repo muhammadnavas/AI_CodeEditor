@@ -35,6 +35,98 @@ const testSessions = new Map();
 // DB-backed stored test configs
 const { getConfigsCollection } = require('../services/db');
 
+// Helper: extract function name from a signature/template - reused by multiple endpoints
+function extractFunctionName(signature, lang) {
+  if (!signature || typeof signature !== 'string') return null;
+  try {
+    if (/function\s+([a-zA-Z0-9_]+)/.test(signature)) {
+      return signature.match(/function\s+([a-zA-Z0-9_]+)/)[1];
+    }
+    if (/const\s+([a-zA-Z0-9_]+)\s*=\s*\(/.test(signature)) {
+      return signature.match(/const\s+([a-zA-Z0-9_]+)\s*=\s*\(/)[1];
+    }
+    if (/let\s+([a-zA-Z0-9_]+)\s*=\s*\(/.test(signature)) {
+      return signature.match(/let\s+([a-zA-Z0-9_]+)\s*=\s*\(/)[1];
+    }
+    if (/([a-zA-Z0-9_]+)\s*:\s*function\s*\(/.test(signature)) {
+      return signature.match(/([a-zA-Z0-9_]+)\s*:\s*function\s*\(/)[1];
+    }
+    if (/def\s+([a-zA-Z0-9_]+)\s*\(/.test(signature)) {
+      return signature.match(/def\s+([a-zA-Z0-9_]+)\s*\(/)[1];
+    }
+    if (/\w+\s+([a-zA-Z0-9_]+)\s*\(.*\)/.test(signature)) {
+      const m = signature.match(/\w+\s+([a-zA-Z0-9_]+)\s*\(.*\)/);
+      if (m) return m[1];
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Create and persist a session from a normalized config object
+function createSessionFromNormalized(normalized, overrides = {}) {
+  const sessionId = `test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const difficulty = overrides.difficulty || normalized.difficulty || 'easy';
+  const language = (overrides.language || normalized.language || 'javascript').toLowerCase();
+  const totalQuestions = typeof normalized.totalQuestions === 'number' ? normalized.totalQuestions : (Array.isArray(normalized.questions) ? normalized.questions.length : 0);
+
+  const session = {
+    id: sessionId,
+    candidateName: overrides.candidateName || normalized.candidateName || 'Candidate',
+    difficulty,
+    language,
+    questionBankId: overrides.questionBankId || null,
+    recruiterId: overrides.recruiterId || null,
+    startTime: new Date(),
+    currentQuestion: 0,
+    totalQuestions,
+    questions: [],
+    results: [],
+    usedQuestionTypes: new Set(),
+    availableQuestions: [],
+    isActive: true
+  };
+
+  session.questions = (Array.isArray(normalized.questions) ? normalized.questions : []).map((q, idx) => {
+    const sig = q.signature || q.function || q.signatureTemplate || '';
+    const lang = (q.language || session.language || 'javascript').toLowerCase();
+    const id = q.id || `q_${Date.now()}_${idx}_${Math.random().toString(36).substr(2,6)}`;
+    return {
+      id,
+      title: q.title || q.name || `Question ${idx + 1}`,
+      description: q.description || q.prompt || '',
+      signature: sig,
+      functionName: q.functionName || extractFunctionName(sig, lang) || null,
+      sampleTests: q.sampleTests || q.samples || q.examples || [],
+      hiddenTests: q.hiddenTests || q.hidden || [],
+      testCases: q.testCases || q.tests || [],
+      constraints: q.constraints || q.constraint || '',
+      expectedComplexity: q.expectedComplexity || q.complexity || '',
+      difficulty: q.difficulty || session.difficulty,
+      language: lang,
+      timeLimit: q.timeLimit || normalized.timePerQuestion || 300,
+      metadata: q.metadata || {}
+    };
+  });
+
+  testSessions.set(sessionId, session);
+
+  const firstQuestion = session.questions[0] || null;
+
+  return {
+    session,
+    response: {
+      sessionId,
+      candidateName: session.candidateName,
+      question: firstQuestion,
+      questionNumber: 1,
+      totalQuestions: session.totalQuestions,
+      timeLimit: firstQuestion ? firstQuestion.timeLimit : 300
+    }
+  };
+}
+
 // Custom question banks storage (recruiters can add their own)
 const questionBanks = new Map();
 
@@ -429,6 +521,47 @@ router.post('/start-session', async (req, res) => {
       error: 'Failed to start test session',
       details: error.message 
     });
+  }
+});
+
+// Start a session by candidateId via URL param - simplified endpoint for programmatic starts
+router.post('/start-session-by-candidate/:candidateId', async (req, res) => {
+  try {
+    const candidateId = req.params.candidateId;
+    const body = req.body || {};
+    console.log('[API] POST /api/test/start-session-by-candidate - candidateId=', candidateId);
+
+    // Try DB lookup first (if available)
+    try {
+      const configs = getConfigsCollection();
+      const docs = await configs.find({ 'normalized.candidateId': candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+      if (docs && docs.length > 0 && docs[0].normalized) {
+        const { response } = createSessionFromNormalized(docs[0].normalized, body);
+        console.log('[API] Started session by candidateId', candidateId);
+        return res.json(response);
+      }
+    } catch (dbErr) {
+      console.warn('[API] start-session-by-candidate DB lookup failed for', candidateId, dbErr && dbErr.message);
+    }
+
+    // Fallback: if a local sample exists, try that
+    try {
+      const candidates = require('../../sample_candidates.json');
+      const doc = candidates.find(d => d.candidateId === candidateId);
+      if (doc) {
+        const normalized = doc.codingAssessment ? { candidateId: doc.candidateId, candidateName: doc.candidateName, timePerQuestion: doc.codingAssessment.timePerQuestion, difficulty: doc.codingAssessment.difficulty, questions: doc.codingAssessment.questions } : doc.normalized || doc;
+        const { response } = createSessionFromNormalized(normalized, body);
+        console.log('[API] Started session by candidateId (local fallback)', candidateId);
+        return res.json(response);
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    return res.status(404).json({ error: 'Config not found for candidateId' });
+  } catch (error) {
+    console.error('Start by candidate error:', error);
+    res.status(500).json({ error: 'Failed to start session by candidate' });
   }
 });
 
