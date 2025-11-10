@@ -121,14 +121,25 @@ function createSessionFromNormalized(normalized, overrides = {}) {
   };
 
   session.questions = (Array.isArray(normalized.questions) ? normalized.questions : []).map((q, idx) => {
-    const sig = q.signature || q.function || q.signatureTemplate || '';
-    const lang = (q.language || session.language || 'javascript').toLowerCase();
+    const lang = (session.language || 'javascript').toLowerCase(); // Use session language, not question language
+    
+    // Get the appropriate signature for the requested language
+    let sig = '';
+    if (q.signatures && typeof q.signatures === 'object') {
+      // Use the language-specific signature from the signatures object
+      sig = q.signatures[lang] || q.signatures.javascript || q.signature || q.function || q.signatureTemplate || '';
+    } else {
+      // Fallback to single signature
+      sig = q.signature || q.function || q.signatureTemplate || '';
+    }
+    
     const id = q.id || `q_${Date.now()}_${idx}_${Math.random().toString(36).substr(2,6)}`;
     return {
       id,
       title: q.title || q.name || `Question ${idx + 1}`,
       description: q.description || q.prompt || '',
       signature: sig,
+      signatures: q.signatures || null, // Keep original signatures object for reference
       functionName: q.functionName || extractFunctionName(sig, lang) || null,
       sampleTests: q.sampleTests || q.samples || q.examples || [],
       hiddenTests: q.hiddenTests || q.hidden || [],
@@ -136,7 +147,7 @@ function createSessionFromNormalized(normalized, overrides = {}) {
       constraints: q.constraints || q.constraint || '',
       expectedComplexity: q.expectedComplexity || q.complexity || '',
       difficulty: q.difficulty || session.difficulty,
-      language: lang,
+      language: lang, // Use session language consistently
       timeLimit: q.timeLimit || normalized.timePerQuestion || 300,
       metadata: q.metadata || {}
     };
