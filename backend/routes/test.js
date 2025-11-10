@@ -34,6 +34,10 @@ const testSessions = new Map();
 
 // DB-backed stored test configs
 const { getConfigsCollection, getDb } = require('../services/db');
+// Import normalizeDoc from db service for testing
+const dbService = require('../services/db');
+// Import enhanced code runner
+const codeRunner = require('../services/codeRunner');
 
 // Persist test results to DB or local file when DB unavailable
 const fs = require('fs');
@@ -557,39 +561,456 @@ router.post('/start-session-by-candidate/:candidateId', async (req, res) => {
   try {
     const candidateId = req.params.candidateId;
     const body = req.body || {};
-    console.log('[API] POST /api/test/start-session-by-candidate - candidateId=', candidateId);
+    console.log('[API] POST /api/test/start-session-by-candidate - candidateId=', candidateId, 'body=', sanitizeLog(body));
 
-    // Try DB lookup first (if available)
-    try {
-      const configs = getConfigsCollection();
-      const docs = await configs.find({ 'normalized.candidateId': candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
-      if (docs && docs.length > 0 && docs[0].normalized) {
-        const { response } = createSessionFromNormalized(docs[0].normalized, body);
-        console.log('[API] Started session by candidateId', candidateId);
-        return res.json(response);
-      }
-    } catch (dbErr) {
-      console.warn('[API] start-session-by-candidate DB lookup failed for', candidateId, dbErr && dbErr.message);
+    if (!candidateId || candidateId.trim() === '') {
+      return res.status(400).json({ error: 'Candidate ID is required' });
     }
 
-    // Fallback: if a local sample exists, try that
+    // Enhanced multi-strategy database search
+    const configs = getConfigsCollection();
+    let foundDoc = null;
+    
+    console.log('[API] Starting database search for candidateId:', candidateId);
+    console.log('[API] Collection config - primary:', configs._primaryName, 'fallback:', configs._fallbackName);
+    
+    // Strategy 1: Use the built-in findOne with query transformation (most robust)
+    try {
+      console.log('[API] Strategy 1: Using enhanced findOne with query transformation');
+      foundDoc = await configs.findOne({ 'normalized.candidateId': candidateId });
+      if (foundDoc) {
+        console.log('[API] Found document via enhanced findOne, keys:', Object.keys(foundDoc));
+      }
+    } catch (dbErr1) {
+      console.warn('[API] Strategy 1 failed (enhanced findOne):', dbErr1 && dbErr1.message);
+    }
+
+    // Strategy 2: Direct candidateId search if not found
+    if (!foundDoc) {
+      try {
+        console.log('[API] Strategy 2: Direct candidateId search');
+        foundDoc = await configs.findOne({ candidateId: candidateId });
+        if (foundDoc) {
+          console.log('[API] Found document via direct candidateId search');
+        }
+      } catch (dbErr2) {
+        console.warn('[API] Strategy 2 failed (direct candidateId):', dbErr2 && dbErr2.message);
+      }
+    }
+
+    // Strategy 3: Case-insensitive search
+    if (!foundDoc) {
+      try {
+        console.log('[API] Strategy 3: Case-insensitive search');
+        const regex = new RegExp(`^${candidateId}$`, 'i');
+        foundDoc = await configs.findOne({ 
+          $or: [
+            { 'normalized.candidateId': regex },
+            { candidateId: regex }
+          ]
+        });
+        if (foundDoc) {
+          console.log('[API] Found document via case-insensitive search');
+        }
+      } catch (dbErr3) {
+        console.warn('[API] Strategy 3 failed (case-insensitive):', dbErr3 && dbErr3.message);
+      }
+    }
+
+    // Strategy 4: Partial match search (if exact match fails)
+    if (!foundDoc) {
+      try {
+        console.log('[API] Strategy 4: Partial match search');
+        const partialRegex = new RegExp(candidateId, 'i');
+        const docs = await configs.find({ 
+          $or: [
+            { 'normalized.candidateId': partialRegex },
+            { candidateId: partialRegex }
+          ]
+        }).limit(5).toArray();
+        
+        if (docs && docs.length > 0) {
+          foundDoc = docs[0]; // Take first match
+          console.log('[API] Found document via partial match, total matches:', docs.length);
+        }
+      } catch (dbErr4) {
+        console.warn('[API] Strategy 4 failed (partial match):', dbErr4 && dbErr4.message);
+      }
+    }
+
+    // If found in database, create session
+    if (foundDoc) {
+      console.log('[API] Found candidate document, keys:', Object.keys(foundDoc));
+      const normalized = foundDoc.normalized || foundDoc;
+      
+      // Validate that we have questions
+      if (!normalized.questions || !Array.isArray(normalized.questions) || normalized.questions.length === 0) {
+        console.error('[API] Found candidate but no questions available:', { 
+          hasNormalized: !!foundDoc.normalized,
+          questionsType: typeof normalized.questions,
+          questionsLength: Array.isArray(normalized.questions) ? normalized.questions.length : 'not-array'
+        });
+        return res.status(400).json({ 
+          error: 'No test questions found for this candidate',
+          candidateId,
+          details: 'The candidate record exists but contains no questions to test with'
+        });
+      }
+
+      const { response } = createSessionFromNormalized(normalized, body);
+      console.log('[API] Successfully started session by candidateId', candidateId, 'sessionId=', response.sessionId);
+      return res.json(response);
+    }
+
+    // Fallback: try local sample file
+    try {
+      console.log('[API] Attempting local sample fallback for candidateId:', candidateId);
+      const candidates = require('../../sample_candidates.json');
+      const doc = candidates.find(d => d.candidateId === candidateId);
+      if (doc) {
+        const normalized = doc.codingAssessment ? { 
+          candidateId: doc.candidateId, 
+          candidateName: doc.candidateName, 
+          timePerQuestion: doc.codingAssessment.timePerQuestion, 
+          difficulty: doc.codingAssessment.difficulty, 
+          questions: doc.codingAssessment.questions 
+        } : doc.normalized || doc;
+        
+        if (!normalized.questions || !Array.isArray(normalized.questions) || normalized.questions.length === 0) {
+          return res.status(400).json({ 
+            error: 'No test questions found for this candidate in local samples',
+            candidateId
+          });
+        }
+
+        const { response } = createSessionFromNormalized(normalized, body);
+        console.log('[API] Started session by candidateId (local fallback)', candidateId, 'sessionId=', response.sessionId);
+        return res.json(response);
+      }
+    } catch (fallbackErr) {
+      console.warn('[API] Local fallback failed:', fallbackErr && fallbackErr.message);
+    }
+
+    // No candidate found anywhere
+    console.log('[API] No candidate found for candidateId:', candidateId);
+    return res.status(404).json({ 
+      error: 'Candidate not found',
+      candidateId,
+      message: 'No test configuration found for this candidate ID. Please verify the candidate ID is correct and has been set up with test questions.'
+    });
+    
+  } catch (error) {
+    console.error('Start by candidate error:', error);
+    res.status(500).json({ 
+      error: 'Failed to start session by candidate',
+      details: error.message,
+      candidateId: req.params.candidateId
+    });
+  }
+});
+
+// Get all candidates (for admin/debugging purposes)
+router.get('/candidates', async (req, res) => {
+  try {
+    console.log('[API] GET /api/test/candidates');
+    
+    const configs = getConfigsCollection();
+    const candidates = [];
+    
+    try {
+      // Get all documents from primary collection
+      const docs = await configs.find({}).toArray();
+      console.log('[API] Found', docs.length, 'documents in collection');
+      
+      for (const doc of docs) {
+        const normalized = doc.normalized || doc;
+        const candidateId = normalized.candidateId || doc.candidateId;
+        
+        // Handle multiple question formats
+        const questions = normalized.questions || doc.questions || doc.codingQuestions || [];
+        
+        if (candidateId) {
+          candidates.push({
+            candidateId,
+            candidateName: normalized.candidateName || doc.candidateName || 'Unknown',
+            position: doc.position || 'Not specified',
+            experience: doc.experience || 'Not specified',
+            skills: doc.skills || [],
+            questionCount: Array.isArray(questions) ? questions.length : 0,
+            difficulty: normalized.difficulty || doc.difficulty || 'medium',
+            language: normalized.language || doc.language || 'javascript',
+            ready: Array.isArray(questions) && questions.length > 0,
+            source: doc.normalized ? 'normalized' : 'direct',
+            questionFormat: questions.length > 0 ? (questions[0].sampleTests ? 'full' : 'simple') : 'none'
+          });
+        }
+      }
+      
+    } catch (dbErr) {
+      console.warn('[API] Database query failed, trying local fallback:', dbErr && dbErr.message);
+      
+      // Try local fallback
+      try {
+        const localCandidates = require('../../sample_candidates.json');
+        for (const doc of localCandidates) {
+          const questions = doc.codingAssessment?.questions || doc.questions || [];
+          candidates.push({
+            candidateId: doc.candidateId,
+            candidateName: doc.candidateName || 'Unknown',
+            questionCount: Array.isArray(questions) ? questions.length : 0,
+            difficulty: doc.codingAssessment?.difficulty || doc.difficulty || 'medium',
+            language: doc.codingAssessment?.language || doc.language || 'javascript',
+            ready: Array.isArray(questions) && questions.length > 0,
+            source: 'local_fallback'
+          });
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    res.json({
+      candidates,
+      total: candidates.length,
+      ready: candidates.filter(c => c.ready).length
+    });
+
+  } catch (error) {
+    console.error('Get candidates error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get candidates list',
+      details: error.message 
+    });
+  }
+});
+
+// Get candidate information and validate questions exist
+router.get('/candidate/:candidateId', async (req, res) => {
+  try {
+    const candidateId = req.params.candidateId;
+    console.log('[API] GET /api/test/candidate - candidateId=', candidateId);
+
+    if (!candidateId || candidateId.trim() === '') {
+      return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+
+    const configs = getConfigsCollection();
+    let foundDoc = null;
+    
+    // Try multiple query strategies
+    try {
+      const docs = await configs.find({ 'normalized.candidateId': candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+      if (docs && docs.length > 0) {
+        foundDoc = docs[0];
+      }
+    } catch (err1) {
+      try {
+        const docs = await configs.find({ candidateId: candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+        if (docs && docs.length > 0) {
+          foundDoc = docs[0];
+        }
+      } catch (err2) {
+        console.warn('[API] Database queries failed for candidate lookup:', err2 && err2.message);
+      }
+    }
+
+    if (foundDoc) {
+      console.log('[API] Found document for candidate:', candidateId, 'keys:', Object.keys(foundDoc));
+      const normalized = foundDoc.normalized || foundDoc;
+      
+      // Handle multiple question formats
+      const questions = normalized.questions || foundDoc.questions || foundDoc.codingQuestions || [];
+      console.log('[API] Questions found:', questions.length, 'format:', questions.length > 0 ? (questions[0].sampleTests ? 'full' : 'simple') : 'none');
+      
+      return res.json({
+        candidateId,
+        candidateName: normalized.candidateName || foundDoc.candidateName || 'Unknown',
+        position: foundDoc.position || 'Not specified',
+        experience: foundDoc.experience || 'Not specified',
+        skills: foundDoc.skills || [],
+        found: true,
+        hasQuestions: Array.isArray(questions) && questions.length > 0,
+        questionCount: Array.isArray(questions) ? questions.length : 0,
+        difficulty: normalized.difficulty || foundDoc.difficulty || 'medium',
+        language: normalized.language || foundDoc.language || 'javascript',
+        timePerQuestion: normalized.timePerQuestion || foundDoc.timePerQuestion || 300,
+        ready: Array.isArray(questions) && questions.length > 0,
+        questionFormat: questions.length > 0 ? (questions[0].sampleTests ? 'full' : 'simple') : 'none'
+      });
+    }
+
+    // Try local fallback
     try {
       const candidates = require('../../sample_candidates.json');
       const doc = candidates.find(d => d.candidateId === candidateId);
       if (doc) {
-        const normalized = doc.codingAssessment ? { candidateId: doc.candidateId, candidateName: doc.candidateName, timePerQuestion: doc.codingAssessment.timePerQuestion, difficulty: doc.codingAssessment.difficulty, questions: doc.codingAssessment.questions } : doc.normalized || doc;
-        const { response } = createSessionFromNormalized(normalized, body);
-        console.log('[API] Started session by candidateId (local fallback)', candidateId);
-        return res.json(response);
+        const questions = doc.codingAssessment?.questions || doc.questions || doc.codingQuestions || [];
+        return res.json({
+          candidateId,
+          candidateName: doc.candidateName || 'Unknown',
+          position: doc.position || 'Not specified',
+          experience: doc.experience || 'Not specified',
+          skills: doc.skills || [],
+          found: true,
+          hasQuestions: Array.isArray(questions) && questions.length > 0,
+          questionCount: Array.isArray(questions) ? questions.length : 0,
+          difficulty: doc.codingAssessment?.difficulty || doc.difficulty || 'medium',
+          language: doc.codingAssessment?.language || doc.language || 'javascript',
+          timePerQuestion: doc.codingAssessment?.timePerQuestion || doc.timePerQuestion || 300,
+          ready: Array.isArray(questions) && questions.length > 0,
+          questionFormat: questions.length > 0 ? (questions[0].sampleTests ? 'full' : 'simple') : 'none',
+          source: 'local_fallback'
+        });
       }
     } catch (e) {
       // ignore
     }
 
-    return res.status(404).json({ error: 'Config not found for candidateId' });
+    return res.status(404).json({
+      candidateId,
+      found: false,
+      error: 'Candidate not found'
+    });
+
   } catch (error) {
-    console.error('Start by candidate error:', error);
-    res.status(500).json({ error: 'Failed to start session by candidate' });
+    console.error('Get candidate error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get candidate information',
+      details: error.message 
+    });
+  }
+});
+
+// Debug endpoint to check database connectivity and collection status
+router.get('/debug/db-status', async (req, res) => {
+  try {
+    console.log('[API] GET /api/test/debug/db-status');
+    
+    const configs = getConfigsCollection();
+    let dbStatus = {
+      connected: false,
+      primaryCollection: configs._primaryName,
+      fallbackCollection: configs._fallbackName,
+      documentCount: 0,
+      sampleDocuments: [],
+      error: null
+    };
+
+    try {
+      // Try to get database connection status
+      const testQuery = await configs.find({}).limit(3).toArray();
+      dbStatus.connected = true;
+      dbStatus.documentCount = testQuery.length;
+      
+      // Get sample document structures (without sensitive data)
+      dbStatus.sampleDocuments = testQuery.map(doc => ({
+        id: doc._id ? doc._id.toString() : 'no-id',
+        candidateId: doc.candidateId || doc.normalized?.candidateId || 'not-found',
+        candidateName: doc.candidateName || doc.normalized?.candidateName || 'not-found',
+        hasQuestions: !!(doc.questions || doc.normalized?.questions || doc.codingAssessment?.questions),
+        questionCount: (doc.questions || doc.normalized?.questions || doc.codingAssessment?.questions || []).length,
+        keys: Object.keys(doc).slice(0, 10) // First 10 keys only
+      }));
+
+      console.log('[API] Database status check successful, found', dbStatus.documentCount, 'documents');
+      
+    } catch (dbError) {
+      dbStatus.error = dbError.message;
+      console.warn('[API] Database status check failed:', dbError.message);
+      
+      // Try local fallback
+      try {
+        const localCandidates = require('../../sample_candidates.json');
+        dbStatus.fallbackAvailable = true;
+        dbStatus.fallbackCount = localCandidates.length;
+      } catch (e) {
+        dbStatus.fallbackAvailable = false;
+      }
+    }
+
+    res.json(dbStatus);
+
+  } catch (error) {
+    console.error('DB status check error:', error);
+    res.status(500).json({ 
+      error: 'Failed to check database status',
+      details: error.message 
+    });
+  }
+});
+
+// Test endpoint for specific candidate ID (68f909508b0f083d6bf39efd)
+router.get('/test-candidate/:candidateId', async (req, res) => {
+  try {
+    const candidateId = req.params.candidateId;
+    console.log('[API] Testing candidate lookup for:', candidateId);
+    
+    const configs = getConfigsCollection();
+    
+    // Try to find the document
+    let foundDoc = null;
+    try {
+      foundDoc = await configs.findOne({ candidateId: candidateId });
+      if (foundDoc) {
+        console.log('[API] Found document directly by candidateId');
+      }
+    } catch (err) {
+      console.warn('[API] Direct lookup failed:', err.message);
+    }
+    
+    if (!foundDoc) {
+      // Try with ObjectId if it looks like one
+      if (candidateId.length === 24) {
+        try {
+          const { ObjectId } = require('mongodb');
+          foundDoc = await configs.findOne({ _id: new ObjectId(candidateId) });
+          if (foundDoc) {
+            console.log('[API] Found document by ObjectId');
+          }
+        } catch (err) {
+          console.warn('[API] ObjectId lookup failed:', err.message);
+        }
+      }
+    }
+    
+    if (foundDoc) {
+      // Apply normalization (the function is internal to db.js, so we'll use the configs collection method)
+      // The normalization happens automatically when we use getConfigsCollection methods
+      const rawQuestions = foundDoc.codingQuestions || foundDoc.questions || [];
+      const hasQuestions = Array.isArray(rawQuestions) && rawQuestions.length > 0;
+      
+      res.json({
+        found: true,
+        originalDoc: {
+          candidateId: foundDoc.candidateId,
+          candidateName: foundDoc.candidateName,
+          position: foundDoc.position,
+          codingQuestions: foundDoc.codingQuestions?.length || 0,
+          questions: foundDoc.questions?.length || 0
+        },
+        rawQuestions: rawQuestions.map(q => ({
+          id: q.id,
+          title: q.title,
+          hasDescription: !!q.description,
+          hasSampleTests: !!(q.sampleTests?.length),
+          hasTestCases: !!(q.testCases?.length)
+        })),
+        ready: hasQuestions
+      });
+    } else {
+      res.json({
+        found: false,
+        candidateId,
+        message: 'No document found with this candidate ID'
+      });
+    }
+    
+  } catch (error) {
+    console.error('[API] Test candidate lookup error:', error);
+    res.status(500).json({
+      error: 'Test lookup failed',
+      details: error.message
+    });
   }
 });
 
@@ -614,39 +1035,98 @@ router.post('/test-code', async (req, res) => {
       return res.status(400).json({ error: 'Question not found' });
     }
 
-    // Test with sample cases only
+    // Test with sample cases only using enhanced code runner
     let sampleTestResults = [];
     let output = null;
     let error = null;
 
     try {
-      // For non-JavaScript languages, skip the basic execution and go straight to sample tests
-      const jsLanguages = ['javascript', 'js', 'node', 'nodejs'];
-      if (jsLanguages.includes(session.language.toLowerCase())) {
-        // Execute JavaScript code to get basic output; prefer the question's function name when available
-        const executionResult = await executeCode(code, session.language, false, question.functionName || null);
-        
-        if (executionResult.error) {
-          error = executionResult.error;
-        } else {
-          output = executionResult.output;
-        }
+      // Use enhanced code runner for all languages
+      console.log('[API] Running sample tests with enhanced code runner for language:', session.language);
+      
+      // First try basic code execution to check for syntax errors
+      const basicExecution = await codeRunner.executeCode(code, session.language, 5000);
+      
+      if (basicExecution.error && !basicExecution.success) {
+        error = basicExecution.error;
+        output = basicExecution.output || 'Code execution failed';
       } else {
-        // For Python, Java, C++, etc. - skip basic execution and show message
-        output = `Code structure looks good for ${session.language}. Running sample tests...`;
-      }
-
-      // Run sample tests from the question
-      if (question.sampleTests && question.sampleTests.length > 0) {
-        sampleTestResults = await runSampleTests(code, session.language, question.sampleTests, question.functionName || null);
-      } else if (question.testCases && question.testCases.length > 0) {
-        // Fallback to first few test cases as samples
-        const sampleCases = question.testCases.slice(0, Math.min(3, question.testCases.length));
-        sampleTestResults = await runSampleTests(code, session.language, sampleCases, question.functionName || null);
+        output = `Code executed successfully for ${session.language}. Running sample tests...`;
+        
+        // Run sample tests using enhanced test runner
+        if (question.sampleTests && question.sampleTests.length > 0) {
+          console.log('[API] Running sample tests:', question.sampleTests.length);
+          
+          // Create a test results object for sample tests only
+          const testResults = {
+            sampleTests: [],
+            hiddenTests: []
+          };
+          
+          // Run each sample test individually
+          for (const testCase of question.sampleTests) {
+            try {
+              const testResult = await codeRunner.runSingleTest(
+                code, 
+                testCase, 
+                question.functionName, 
+                session.language,
+                question.signatures ? question.signatures[session.language] : question.signature
+              );
+              testResults.sampleTests.push(testResult);
+            } catch (testError) {
+              console.error('[API] Sample test error:', testError);
+              testResults.sampleTests.push({
+                passed: false,
+                input: testCase.input,
+                expected: testCase.expectedOutput,
+                actual: null,
+                error: testError.message,
+                description: testCase.description || 'Sample test'
+              });
+            }
+          }
+          
+          sampleTestResults = testResults.sampleTests;
+        } else if (question.testCases && question.testCases.length > 0) {
+          // Fallback to first few test cases as samples
+          const sampleCases = question.testCases.slice(0, Math.min(3, question.testCases.length));
+          console.log('[API] Using test cases as samples:', sampleCases.length);
+          
+          const testResults = [];
+          for (const testCase of sampleCases) {
+            try {
+              const testResult = await codeRunner.runSingleTest(
+                code, 
+                testCase, 
+                question.functionName, 
+                session.language,
+                question.signatures ? question.signatures[session.language] : question.signature
+              );
+              testResults.push(testResult);
+            } catch (testError) {
+              testResults.push({
+                passed: false,
+                input: testCase.input,
+                expected: testCase.expectedOutput,
+                actual: null,
+                error: testError.message,
+                description: testCase.description || 'Test case'
+              });
+            }
+          }
+          
+          sampleTestResults = testResults;
+        } else {
+          console.log('[API] No sample tests or test cases available');
+          sampleTestResults = [];
+        }
       }
 
     } catch (execError) {
+      console.error('[API] Code execution error:', execError);
       error = execError.message;
+      output = 'Failed to execute code';
     }
 
     console.log('[API] test-code - sampleTests count=', (sampleTestResults && sampleTestResults.length) || 0, 'error=', !!error);

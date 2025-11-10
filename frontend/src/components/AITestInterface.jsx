@@ -15,6 +15,7 @@ export default function AITestInterface() {
   const [candidateIdInput, setCandidateIdInput] = useState('');
   // language can be changed by the candidate inside the code editor while taking the test
   const [language, setLanguage] = useState('javascript');
+  const [availableLanguages, setAvailableLanguages] = useState(['javascript', 'python', 'java', 'cpp']);
   
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [questionNumber, setQuestionNumber] = useState(1);
@@ -86,6 +87,45 @@ export default function AITestInterface() {
     }
   }
 
+  // Helper function to clean up test input display
+  const cleanTestInput = (input) => {
+    if (typeof input !== 'string') return input;
+    
+    // Remove outer parentheses if they wrap the entire input
+    const trimmed = input.trim();
+    if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+      // Check if these are the outer wrapping parentheses
+      let depth = 0;
+      for (let i = 1; i < trimmed.length - 1; i++) {
+        if (trimmed[i] === '(') depth++;
+        if (trimmed[i] === ')') depth--;
+        if (depth < 0) return input; // Not outer wrapping parentheses
+      }
+      if (depth === 0) {
+        return trimmed.slice(1, -1);
+      }
+    }
+    return input;
+  };
+
+  // Handle language switching during active session
+  const handleLanguageChange = (newLanguage, signature) => {
+    console.log('Language changed to:', newLanguage);
+    setLanguage(newLanguage);
+    
+    // Update code with signature for new language if available
+    if (signature) {
+      setCode(signature);
+    } else if (currentQuestion && currentQuestion.signatures && currentQuestion.signatures[newLanguage]) {
+      setCode(currentQuestion.signatures[newLanguage]);
+    } else if (currentQuestion && currentQuestion.functionName) {
+      const newTemplate = buildTemplateWithFunction(currentQuestion.functionName, newLanguage);
+      setCode(newTemplate);
+    } else {
+      setCode(getDefaultTemplate(newLanguage));
+    }
+  };
+
   // Handler: run code against sample tests (calls backend /test-code)
   const handleRunCode = async () => {
     if (!sessionId || !currentQuestion) {
@@ -147,11 +187,28 @@ export default function AITestInterface() {
         setTimeSpent(0);
         setIsTimerActive(true);
         questionStartTimeRef.current = Date.now();
-        // set code template for next question
-        const fnName = resp.nextQuestion.functionName || null;
-        const newTemplate = resp.nextQuestion.signature && resp.nextQuestion.language && resp.nextQuestion.language.toLowerCase() === language.toLowerCase()
-          ? resp.nextQuestion.signature
-          : (fnName ? buildTemplateWithFunction(fnName, resp.nextQuestion.language || language) : getDefaultTemplate(resp.nextQuestion.language || language));
+        
+        // Update available languages for new question - always keep all supported languages
+        const supportedLanguages = ['javascript', 'python', 'java', 'cpp'];
+        if (resp.nextQuestion.signatures && typeof resp.nextQuestion.signatures === 'object') {
+          const questionLanguages = Object.keys(resp.nextQuestion.signatures);
+          setAvailableLanguages([...new Set([...supportedLanguages, ...questionLanguages])]);
+        } else {
+          setAvailableLanguages(supportedLanguages);
+        }
+        
+        // Set code template for next question with language priority
+        let newTemplate = '';
+        if (resp.nextQuestion.signatures && resp.nextQuestion.signatures[language]) {
+          newTemplate = resp.nextQuestion.signatures[language];
+        } else if (resp.nextQuestion.signature && resp.nextQuestion.language && resp.nextQuestion.language.toLowerCase() === language.toLowerCase()) {
+          newTemplate = resp.nextQuestion.signature;
+        } else if (resp.nextQuestion.functionName) {
+          newTemplate = buildTemplateWithFunction(resp.nextQuestion.functionName, language);
+        } else {
+          newTemplate = getDefaultTemplate(language);
+        }
+        
         setCode(newTemplate);
         // clear previous result panels so candidate can continue
         setShowingResult(false);
@@ -179,11 +236,32 @@ export default function AITestInterface() {
     questionStartTimeRef.current = Date.now();
 
     const q = response.question || {};
-    const fnName = q.functionName || null;
-    const initialTemplate = (q.signature && q.language && q.language.toLowerCase() === (lang || language).toLowerCase())
-      ? q.signature
-      : (fnName ? buildTemplateWithFunction(fnName, lang || language) : getDefaultTemplate(lang || language));
+    const currentLang = lang || language;
+    
+    // Extract available languages from question signatures, but always include all supported languages
+    const supportedLanguages = ['javascript', 'python', 'java', 'cpp'];
+    if (q.signatures && typeof q.signatures === 'object') {
+      // Use question signatures but ensure all supported languages are available
+      const questionLanguages = Object.keys(q.signatures);
+      setAvailableLanguages([...new Set([...supportedLanguages, ...questionLanguages])]);
+    } else {
+      setAvailableLanguages(supportedLanguages);
+    }
+    
+    // Set initial code based on language and available signatures
+    let initialTemplate = '';
+    if (q.signatures && q.signatures[currentLang]) {
+      initialTemplate = q.signatures[currentLang];
+    } else if (q.signature && q.language && q.language.toLowerCase() === currentLang.toLowerCase()) {
+      initialTemplate = q.signature;
+    } else if (q.functionName) {
+      initialTemplate = buildTemplateWithFunction(q.functionName, currentLang);
+    } else {
+      initialTemplate = getDefaultTemplate(currentLang);
+    }
+    
     setCode(initialTemplate);
+    setLanguage(currentLang);
   };
 
   // Start a session by configId helper (reusable)
@@ -203,15 +281,72 @@ export default function AITestInterface() {
   
   // Start a session by candidateId helper
   const startByCandidateId = async (candidateIdParam, langParam) => {
-    if (!candidateIdParam) return;
+    if (!candidateIdParam) {
+      alert('Please provide a candidate ID');
+      return;
+    }
+    
+    const trimmedCandidateId = candidateIdParam.trim();
+    console.debug('[AITestInterface] Starting test for candidateId:', trimmedCandidateId);
     setLoading(true);
+    
     try {
-      const payload = { candidateId: candidateIdParam, language: langParam || language };
-      const response = await apiService.startTestSession(payload);
+      // First check if candidate exists and has questions
+      console.debug('[AITestInterface] Checking candidate availability...');
+      const candidateCheck = await apiService.request(`/api/test/candidate/${trimmedCandidateId}`);
+      console.debug('[AITestInterface] Candidate check result:', candidateCheck);
+      
+      if (!candidateCheck.found) {
+        alert(`❌ Candidate Not Found\n\nCandidate ID "${trimmedCandidateId}" was not found in the system.\n\nPlease:\n• Check that you entered the ID correctly\n• Verify the ID with your test administrator\n• Make sure the candidate has been set up in the system`);
+        setLoading(false);
+        return;
+      }
+      
+      if (!candidateCheck.ready) {
+        alert(`⚠️ Test Not Ready\n\nCandidate "${candidateCheck.candidateName || trimmedCandidateId}" was found but has no test questions configured.\n\nQuestion count: ${candidateCheck.questionCount || 0}\n\nPlease contact your test administrator to set up the questions.`);
+        setLoading(false);
+        return;
+      }
+
+      console.debug('[AITestInterface] Candidate validated, starting session...', {
+        candidateName: candidateCheck.candidateName,
+        questionCount: candidateCheck.questionCount,
+        difficulty: candidateCheck.difficulty
+      });
+
+      // Candidate exists and has questions, start the session using the enhanced endpoint
+      const response = await apiService.request(`/api/test/start-session-by-candidate/${trimmedCandidateId}`, {
+        method: 'POST',
+        body: JSON.stringify({ language: langParam || language })
+      });
+      
+      console.debug('[AITestInterface] Session started successfully:', response);
+      
+      // Show success message briefly
+      const successMessage = `✅ Test Started Successfully!\n\nWelcome ${response.candidateName || candidateCheck.candidateName || 'Candidate'}\nQuestions: ${response.totalQuestions}\nTime per question: ${Math.floor((response.timeLimit || 300) / 60)} minutes`;
+      
+      // Don't block the UI with alert, just log it
+      console.info(successMessage);
+      
       initializeSessionFromResponse(response, langParam || language);
+      
     } catch (err) {
       console.error('Failed to start by candidateId:', err);
-      alert('Failed to start test with provided candidateId.');
+      
+      // Provide specific error messages based on the error
+      let errorMessage = `❌ Failed to Start Test\n\n`;
+      
+      if (err.message && err.message.includes('404')) {
+        errorMessage += `Candidate ID "${trimmedCandidateId}" not found in the system.\n\nPlease check the candidate ID and try again.`;
+      } else if (err.message && err.message.includes('400')) {
+        errorMessage += `Candidate "${trimmedCandidateId}" exists but has configuration issues.\n\nPlease contact your administrator.`;
+      } else if (err.message && (err.message.includes('500') || err.message.includes('Internal'))) {
+        errorMessage += `System error occurred while starting the test.\n\nError: ${err.message}\n\nPlease try again or contact support.`;
+      } else {
+        errorMessage += `Unexpected error: ${err.message || 'Unknown error'}\n\nPlease try again or contact your administrator.`;
+      }
+      
+      alert(errorMessage);
     }
     setLoading(false);
   };
@@ -307,8 +442,28 @@ export default function AITestInterface() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-start when server injects globals like window.__CANDIDATE_ID__ or window.__CONFIG_ID__
+  // Auto-start when URL parameters, server injects globals, or other triggers are detected
   useEffect(() => {
+    // Check URL parameters first (highest priority)
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlCandidateId = urlParams.get('candidateId') || urlParams.get('candidate_id') || urlParams.get('cid');
+      const urlConfigId = urlParams.get('configId') || urlParams.get('config_id') || urlParams.get('cfg');
+      const urlLanguage = urlParams.get('language') || urlParams.get('lang');
+      
+      if (urlCandidateId) {
+        console.debug('[AITestInterface] Auto-starting from URL candidateId:', urlCandidateId);
+        startByCandidateId(urlCandidateId, urlLanguage || undefined);
+        return;
+      }
+      
+      if (urlConfigId) {
+        console.debug('[AITestInterface] Auto-starting from URL configId:', urlConfigId);
+        startByConfigId(urlConfigId, urlLanguage || undefined);
+        return;
+      }
+    }
+
     // Poll for server-injected globals for a short period (useful when injection happens after client load)
     let attempts = 0;
     const maxAttempts = 60; // ~30 seconds at 500ms interval
@@ -343,63 +498,105 @@ export default function AITestInterface() {
   }, []);
   if (testState === 'setup') {
     return (
-      <div className="max-w-2xl mx-auto p-6">
-        <div className="bg-white rounded-lg shadow-md p-8 text-center">
-          <h2 className="text-lg font-medium text-gray-900">Waiting to start test</h2>
-          <p className="text-sm text-gray-600 mt-2">This interface will start automatically when your system injects <code>window.__CANDIDATE_ID__</code> or calls <code>window.startCodingTest()</code>.</p>
-
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="text-left">
-              <label className="text-sm text-gray-700">Candidate ID</label>
-              <input
-                type="text"
-                value={candidateIdInput}
-                onChange={(e) => setCandidateIdInput(e.target.value)}
-                placeholder="cand_123 or candidate id"
-                className="mt-1 w-full border rounded px-3 py-2"
-              />
-              <div className="mt-2 flex space-x-2">
-                <button
-                  onClick={() => startByCandidateId(candidateIdInput)}
-                  disabled={loading || !candidateIdInput.trim()}
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {loading ? 'Starting...' : 'Start by Candidate ID'}
-                </button>
-                <button
-                  onClick={() => { setCandidateIdInput(''); }}
-                  className="bg-gray-100 text-gray-800 px-4 py-2 rounded hover:bg-gray-200"
-                >
-                  Clear
-                </button>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+        <div className="max-w-md w-full">
+          <div className="bg-white rounded-xl shadow-lg p-8">
+            {/* Header */}
+            <div className="text-center mb-8">
+              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Code className="w-8 h-8 text-blue-600" />
               </div>
+              <h2 className="text-2xl font-bold text-gray-900">Coding Assessment</h2>
+              <p className="text-gray-600 mt-2">Enter your candidate ID to begin the test</p>
             </div>
 
-            <div className="text-left">
-              <label className="text-sm text-gray-700">Config ID</label>
-              <input
-                type="text"
-                value={configIdInput}
-                onChange={(e) => setConfigIdInput(e.target.value)}
-                placeholder="cfg_... (stored test id)"
-                className="mt-1 w-full border rounded px-3 py-2"
-              />
-              <div className="mt-2 flex space-x-2">
-                <button
-                  onClick={() => startByConfigId(configIdInput)}
-                  disabled={loading || !configIdInput.trim()}
-                  className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50"
-                >
-                  {loading ? 'Starting...' : 'Start by Config ID'}
-                </button>
-                <button
-                  onClick={() => { setConfigIdInput(''); }}
-                  className="bg-gray-100 text-gray-800 px-4 py-2 rounded hover:bg-gray-200"
-                >
-                  Clear
-                </button>
+            {/* Candidate ID Input - Primary Method */}
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="candidateId" className="block text-sm font-medium text-gray-700 mb-2">
+                  Candidate ID
+                </label>
+                <input
+                  id="candidateId"
+                  type="text"
+                  value={candidateIdInput}
+                  onChange={(e) => setCandidateIdInput(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && candidateIdInput.trim() && !loading) {
+                      startByCandidateId(candidateIdInput);
+                    }
+                  }}
+                  placeholder="Enter your candidate ID (e.g., CAND_123)"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-lg"
+                  disabled={loading}
+                />
               </div>
+              
+              <button
+                onClick={() => startByCandidateId(candidateIdInput)}
+                disabled={loading || !candidateIdInput.trim()}
+                className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-lg transition-colors flex items-center justify-center"
+              >
+                {loading ? (
+                  <>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                    Starting Test...
+                  </>
+                ) : (
+                  'Start Coding Test'
+                )}
+              </button>
             </div>
+
+            {/* Divider */}
+            <div className="my-8 flex items-center">
+              <div className="flex-1 border-t border-gray-200"></div>
+              <span className="px-4 text-sm text-gray-500">Or use alternative method</span>
+              <div className="flex-1 border-t border-gray-200"></div>
+            </div>
+
+            {/* Alternative Methods - Collapsible */}
+            <details className="group">
+              <summary className="cursor-pointer text-sm text-gray-600 hover:text-gray-800 flex items-center justify-between py-2">
+                <span>Advanced Options</span>
+                <svg className="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </summary>
+              
+              <div className="mt-4 space-y-4 pt-4 border-t border-gray-100">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Config ID</label>
+                  <div className="flex space-x-2">
+                    <input
+                      type="text"
+                      value={configIdInput}
+                      onChange={(e) => setConfigIdInput(e.target.value)}
+                      placeholder="cfg_..."
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                      disabled={loading}
+                    />
+                    <button
+                      onClick={() => startByConfigId(configIdInput)}
+                      disabled={loading || !configIdInput.trim()}
+                      className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 disabled:opacity-50 text-sm"
+                    >
+                      Start
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="text-xs text-gray-500">
+                  <p>• URL Parameters: Add ?candidateId=YOUR_ID to the URL</p>
+                  <p>• Programmatic: Use window.startCodingTest('YOUR_ID')</p>
+                </div>
+              </div>
+            </details>
+          </div>
+          
+          {/* Help Text */}
+          <div className="mt-6 text-center text-sm text-gray-500">
+            <p>Need help? Contact your test administrator if you don't have a candidate ID.</p>
           </div>
         </div>
       </div>
@@ -441,19 +638,24 @@ export default function AITestInterface() {
                   value={language}
                   onChange={(e) => {
                     const newLang = e.target.value;
-                    setLanguage(newLang);
-                    // Update code template to match the selected language and keep function name if available
-                    const fn = currentQuestion?.functionName || null;
-                    const newTemplate = fn ? buildTemplateWithFunction(fn, newLang) : getDefaultTemplate(newLang);
-                    setCode(newTemplate);
+                    handleLanguageChange(newLang);
                   }}
-                  className="border rounded px-2 py-1 text-sm"
+                  className="border rounded px-2 py-1 text-sm bg-white"
                 >
-                  <option value="javascript">JavaScript</option>
-                  <option value="typescript">TypeScript</option>
-                  <option value="python">Python</option>
-                  <option value="java">Java</option>
-                  <option value="cpp">C++</option>
+                  {availableLanguages.map(lang => {
+                    const languageNames = {
+                      javascript: 'JavaScript',
+                      python: 'Python', 
+                      java: 'Java',
+                      cpp: 'C++',
+                      typescript: 'TypeScript'
+                    };
+                    return (
+                      <option key={lang} value={lang}>
+                        {languageNames[lang] || lang.charAt(0).toUpperCase() + lang.slice(1)}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
               
@@ -541,14 +743,58 @@ export default function AITestInterface() {
                     </div>
                   )}
 
-                  {currentQuestion.complexity && (
+                  {(currentQuestion.expectedComplexity || currentQuestion.complexity) && (
                     <div>
                       <h4 className="text-lg font-semibold text-gray-900 mb-3">Expected Complexity:</h4>
                       <div className="bg-purple-50 border border-purple-200 p-4 rounded-lg shadow-sm">
-                        <p className="text-purple-800 font-mono">{currentQuestion.complexity}</p>
+                        <p className="text-purple-800 font-mono">{currentQuestion.expectedComplexity || currentQuestion.complexity}</p>
                       </div>
                     </div>
                   )}
+
+                  {/* Sample Tests Section */}
+                  {currentQuestion.sampleTests && currentQuestion.sampleTests.length > 0 && (
+                    <div>
+                      <h4 className="text-lg font-semibold text-gray-900 mb-3">Sample Test Cases:</h4>
+                      <div className="space-y-3">
+                        {currentQuestion.sampleTests.map((test, index) => (
+                          <div key={index} className="bg-white p-4 rounded-lg border shadow-sm">
+                            <div className="space-y-2">
+                              <div>
+                                <div className="font-semibold text-gray-700 text-sm">Input:</div>
+                                <div className="font-mono bg-gray-50 p-2 rounded border text-sm">{cleanTestInput(test.input)}</div>
+                              </div>
+                              <div>
+                                <div className="font-semibold text-gray-700 text-sm">Expected Output:</div>
+                                <div className="font-mono bg-gray-50 p-2 rounded border text-sm">{test.expectedOutput}</div>
+                              </div>
+                              {test.description && (
+                                <div className="text-xs text-gray-600 italic">{test.description}</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Difficulty and Time Limit */}
+                  <div className="flex items-center space-x-4 text-sm">
+                    {currentQuestion.difficulty && (
+                      <div className={`px-3 py-1 rounded-full font-medium ${
+                        currentQuestion.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
+                        currentQuestion.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        Difficulty: {currentQuestion.difficulty.charAt(0).toUpperCase() + currentQuestion.difficulty.slice(1)}
+                      </div>
+                    )}
+                    {currentQuestion.timeLimit && (
+                      <div className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full font-medium">
+                        Time Limit: {Math.floor(currentQuestion.timeLimit / 60)}:{(currentQuestion.timeLimit % 60).toString().padStart(2, '0')}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -566,6 +812,9 @@ export default function AITestInterface() {
                 value={code}
                 onChange={setCode}
                 language={language}
+                onLanguageChange={handleLanguageChange}
+                signatures={currentQuestion?.signatures || {}}
+                showLanguageSelector={false}
                 height="100%"
               />
             </div>
