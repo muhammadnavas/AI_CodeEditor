@@ -63,7 +63,7 @@ router.post('/analyze', async (req, res) => {
   }
 });
 
-// Execute code (all languages via Docker)
+// Execute code (Docker or local fallback)
 router.post('/execute', codeExecutionLimiter, optionalApiKey, async (req, res) => {
   try {
     const { code, language = 'javascript', input = '' } = req.body;
@@ -72,17 +72,17 @@ router.post('/execute', codeExecutionLimiter, optionalApiKey, async (req, res) =
       return res.status(400).json({ error: 'Code is required' });
     }
 
-    // Check if Docker is available
+    // Check if Docker is available or if we support local execution
     const dockerStatus = await codeRunner.checkDocker();
-    if (!dockerStatus.available) {
+    if (!dockerStatus.available && !(await codeRunner.supportsLocalExecution(language))) {
       return res.status(503).json({
         error: 'Code execution service unavailable',
-        message: 'Docker is not available. Please contact administrator.',
+        message: `Neither Docker nor local execution is available for ${language}. Required: ${codeRunner.getRequiredCompiler(language)}`,
         details: dockerStatus.message
       });
     }
 
-    // Execute code in isolated Docker container
+    // Execute code (will use Docker if available, otherwise local execution)
     const result = await codeRunner.executeCode(code, language, 5000, input);
 
     res.json({

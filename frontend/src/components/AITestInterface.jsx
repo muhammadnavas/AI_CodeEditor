@@ -126,10 +126,278 @@ export default function AITestInterface() {
     }
   };
 
-  // Handler: run code against sample tests (calls backend /test-code)
+  // Handler: run code against test cases
   const handleRunCode = async () => {
+    setRunLoading(true);
+    
+    try {
+      // If we have a current question with sample tests, run those
+      if (currentQuestion && currentQuestion.sampleTests && currentQuestion.sampleTests.length > 0) {
+        console.log('[AITestInterface] Running code against sample test cases');
+        
+        const testResults = [];
+        let allPassed = true;
+        
+        for (const testCase of currentQuestion.sampleTests) {
+          try {
+            // Create test code that calls the user's function with the test input
+            const testCode = createTestCode(code, testCase, currentQuestion.functionName, language);
+            console.log('[AITestInterface] Running test:', testCase.description, 'with input:', testCase.input);
+            
+            const result = await apiService.executeCode(testCode, language);
+            
+            if (!result.success) {
+              testResults.push({
+                description: testCase.description || 'Sample test',
+                passed: false,
+                input: testCase.input,
+                expected: testCase.expectedOutput,
+                actual: 'Error',
+                error: result.error
+              });
+              allPassed = false;
+            } else {
+              // Parse the output and compare with expected
+              const actualOutput = result.output.trim();
+              const expectedOutput = String(testCase.expectedOutput).trim();
+              
+              // Try to parse as JSON for array/object comparison
+              let actualParsed = actualOutput;
+              let expectedParsed = expectedOutput;
+              try {
+                actualParsed = JSON.parse(actualOutput);
+                expectedParsed = JSON.parse(expectedOutput);
+              } catch (e) {
+                // Keep as strings if not valid JSON
+              }
+              
+              const passed = JSON.stringify(actualParsed) === JSON.stringify(expectedParsed);
+              
+              testResults.push({
+                description: testCase.description || 'Sample test',
+                passed: passed,
+                input: testCase.input,
+                expected: testCase.expectedOutput,
+                actual: actualOutput,
+                error: passed ? null : 'Output does not match expected result'
+              });
+              
+              if (!passed) allPassed = false;
+            }
+          } catch (testError) {
+            console.error('[AITestInterface] Test execution error:', testError);
+            testResults.push({
+              description: testCase.description || 'Sample test',
+              passed: false,
+              input: testCase.input,
+              expected: testCase.expectedOutput,
+              actual: 'Error',
+              error: testError.message
+            });
+            allPassed = false;
+          }
+        }
+        
+        // Show test results
+        setSampleTestResults({
+          output: allPassed ? 'All tests passed!' : 'Some tests failed',
+          error: null,
+          sampleTests: testResults
+        });
+        
+      } else {
+        // Fallback to basic execution if no test cases
+        console.log('[AITestInterface] No test cases available, running basic execution');
+        const basicResult = await apiService.executeCode(code, language);
+        
+        setSampleTestResults({
+          output: basicResult.output,
+          error: basicResult.error,
+          sampleTests: [{
+            description: 'Code execution',
+            passed: basicResult.success,
+            input: 'Basic execution',
+            expected: 'No errors',
+            actual: basicResult.success ? basicResult.output || 'Success' : basicResult.error,
+            error: basicResult.error
+          }]
+        });
+      }
+      
+      setShowingSampleResults(true);
+      setIsResultsPanelExpanded(true);
+      
+    } catch (error) {
+      console.error('[AITestInterface] Code execution failed:', error);
+      
+      setSampleTestResults({
+        output: '',
+        error: error.message || 'Execution failed',
+        sampleTests: [{
+          description: 'Code execution',
+          passed: false,
+          input: 'Basic execution', 
+          expected: 'No errors',
+          actual: error.message || 'Execution failed',
+          error: error.message || 'Execution failed'
+        }]
+      });
+      setShowingSampleResults(true);
+      setIsResultsPanelExpanded(true);
+    }
+    
+    setRunLoading(false);
+  };
+
+  // Helper function to create test code for different languages
+  const createTestCode = (userCode, testCase, functionName, language) => {
+    const input = testCase.input;
+    
+    switch (language.toLowerCase()) {
+      case 'javascript':
+        // Parse input to extract arguments properly for JavaScript
+        let jsInput = input;
+        if (input.startsWith('(') && input.endsWith(')')) {
+          jsInput = input.slice(1, -1);
+        }
+        
+        if (userCode.includes('class Solution')) {
+          // Handle class-style JavaScript
+          return `${userCode}
+
+// Test execution
+try {
+  const solution = new Solution();
+  const result = solution.${functionName}(${jsInput});
+  console.log(JSON.stringify(result));
+} catch (error) {
+  console.error('Error:', error.message);
+}`;
+        } else {
+          // Handle function-style JavaScript (var twoSum = function, function twoSum, etc.)
+          return `${userCode}
+
+// Test execution
+try {
+  const result = ${functionName}(${jsInput});
+  console.log(JSON.stringify(result));
+} catch (error) {
+  console.error('Error:', error.message);
+}`;
+        }
+        break;
+        
+      case 'python':
+        if (userCode.includes('class Solution')) {
+          // Parse input to extract arguments properly
+          let parsedInput = input;
+          if (input.startsWith('(') && input.endsWith(')')) {
+            parsedInput = input.slice(1, -1);
+          }
+          
+          return `import json
+import sys
+from typing import List, Optional, Dict, Set, Tuple
+
+${userCode}
+
+# Test execution
+try:
+    solution = Solution()
+    result = solution.${functionName}(${parsedInput})
+    print(json.dumps(result))
+except Exception as error:
+    print(f"Error: {error}", file=sys.stderr)`;
+        } else {
+          // Handle function-style Python
+          let parsedInput = input;
+          if (input.startsWith('(') && input.endsWith(')')) {
+            parsedInput = input.slice(1, -1);
+          }
+          
+          return `import json
+import sys
+from typing import List, Optional, Dict, Set, Tuple
+
+${userCode}
+
+# Test execution  
+try:
+    result = ${functionName}(${parsedInput})
+    print(json.dumps(result))
+except Exception as error:
+    print(f"Error: {error}", file=sys.stderr)`;
+        }
+        break;
+        
+      case 'java':
+        // Extract class name from user code
+        const classMatch = userCode.match(/class\s+(\w+)/);
+        const className = classMatch ? classMatch[1] : 'Solution';
+        
+        // Parse input for Java
+        let javaInput = input;
+        if (input.startsWith('(') && input.endsWith(')')) {
+          javaInput = input.slice(1, -1);
+        }
+        
+        return `import java.util.*;
+import java.util.Arrays;
+
+${userCode}
+
+public class TestRunner {
+    public static void main(String[] args) {
+        try {
+            ${className} solution = new ${className}();
+            Object result = solution.${functionName}(${javaInput});
+            System.out.println(Arrays.toString((int[])result));
+        } catch (Exception error) {
+            System.err.println("Error: " + error.getMessage());
+        }
+    }
+}`;
+      
+      case 'cpp':
+        // Parse input for C++
+        let cppInput = input;
+        if (input.startsWith('(') && input.endsWith(')')) {
+          cppInput = input.slice(1, -1);
+        }
+        
+        return `#include <iostream>
+#include <vector>
+#include <string>
+using namespace std;
+
+${userCode}
+
+int main() {
+    try {
+        Solution solution;
+        auto result = solution.${functionName}(${cppInput});
+        // Handle vector output
+        cout << "[";
+        for(int i = 0; i < result.size(); i++) {
+            cout << result[i];
+            if(i < result.size() - 1) cout << ",";
+        }
+        cout << "]" << endl;
+    } catch (const exception& error) {
+        cerr << "Error: " << error.what() << endl;
+    }
+    return 0;
+}`;
+    }
+    
+    // Default fallback
+    return userCode;
+  };
+
+  // Keep the old session-based test code handler for explicit test running
+  const handleRunTests = async () => {
     if (!sessionId || !currentQuestion) {
-      console.debug('[AITestInterface] handleRunCode called without active session or question', { sessionId, currentQuestion });
+      console.debug('[AITestInterface] handleRunTests called without active session or question', { sessionId, currentQuestion });
       alert('No active test session. Please start the test first.');
       return;
     }

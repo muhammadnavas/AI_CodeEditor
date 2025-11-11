@@ -1031,9 +1031,21 @@ router.post('/test-code', async (req, res) => {
     const { sessionId, code, questionNumber } = req.body;
     console.log('[API] POST /api/test/test-code - sessionId=', sessionId, 'questionNumber=', questionNumber);
     
+    // Debug session information
+    console.log('[API] Total sessions in memory:', testSessions.size);
+    console.log('[API] Available session IDs:', Array.from(testSessions.keys()));
+    
     const session = testSessions.get(sessionId);
+    console.log('[API] Session found:', !!session, 'isActive:', session?.isActive);
+    
     if (!session || !session.isActive) {
-      return res.status(400).json({ error: 'Invalid or expired session' });
+      console.log('[API] Session validation failed - session:', !!session, 'isActive:', session?.isActive);
+      return res.status(400).json({ 
+        error: 'Invalid or expired session',
+        sessionId: sessionId,
+        availableSessions: Array.from(testSessions.keys()),
+        debug: 'Session not found or inactive'
+      });
     }
 
     if (!code || code.trim() === '') {
