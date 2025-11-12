@@ -1,5 +1,6 @@
 const express = require('express');
 const OpenAI = require('openai');
+const { ObjectId } = require('mongodb');
 const router = express.Router();
 
 // Initialize OpenAI conditionally
@@ -854,24 +855,49 @@ router.get('/candidate/:candidateId', async (req, res) => {
     
     // Try multiple query strategies
     try {
-      console.log('[API] Trying normalized.candidateId query...');
-      const docs = await configs.find({ 'normalized.candidateId': candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
-      console.log('[API] Normalized query result count:', docs?.length || 0);
-      if (docs && docs.length > 0) {
-        foundDoc = docs[0];
+      // Try as ObjectId first (most likely case for new records)
+      console.log('[API] Trying candidateId as ObjectId...');
+      let docs;
+      if (ObjectId.isValid(candidateId)) {
+        docs = await configs.find({ candidateId: new ObjectId(candidateId) }).sort({ createdAt: -1 }).limit(1).toArray();
+        console.log('[API] ObjectId query result count:', docs?.length || 0);
+        if (docs && docs.length > 0) {
+          foundDoc = docs[0];
+        }
       }
-    } catch (err1) {
-      console.warn('[API] Normalized query failed:', err1.message);
-      try {
+      
+      // If not found, try normalized.candidateId
+      if (!foundDoc) {
+        console.log('[API] Trying normalized.candidateId query...');
+        docs = await configs.find({ 'normalized.candidateId': candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+        console.log('[API] Normalized query result count:', docs?.length || 0);
+        if (docs && docs.length > 0) {
+          foundDoc = docs[0];
+        }
+      }
+      
+      // If still not found, try as string candidateId
+      if (!foundDoc) {
         console.log('[API] Trying direct candidateId query...');
-        const docs = await configs.find({ candidateId: candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+        docs = await configs.find({ candidateId: candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
         console.log('[API] Direct query result count:', docs?.length || 0);
         if (docs && docs.length > 0) {
           foundDoc = docs[0];
         }
-      } catch (err2) {
-        console.warn('[API] Database queries failed for candidate lookup:', err2.message);
       }
+      
+      // Try by _id as last resort
+      if (!foundDoc && ObjectId.isValid(candidateId)) {
+        console.log('[API] Trying _id query...');
+        docs = await configs.find({ _id: new ObjectId(candidateId) }).sort({ createdAt: -1 }).limit(1).toArray();
+        console.log('[API] _id query result count:', docs?.length || 0);
+        if (docs && docs.length > 0) {
+          foundDoc = docs[0];
+        }
+      }
+      
+    } catch (err1) {
+      console.warn('[API] Database queries failed for candidate lookup:', err1.message);
     }
 
     if (foundDoc) {
