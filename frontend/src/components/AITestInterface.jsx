@@ -45,6 +45,97 @@ export default function AITestInterface() {
   const timerRef = useRef(null);
   const questionStartTimeRef = useRef(null);
 
+  // Timer useEffect - handles countdown and auto-submit on timeout
+  useEffect(() => {
+    if (isTimerActive && timeLeft > 0) {
+      timerRef.current = setInterval(() => {
+        setTimeLeft(prev => {
+          const newTime = prev - 1;
+          if (newTime <= 0) {
+            // Time up - auto submit
+            handleTimeoutSubmit();
+            return 0;
+          }
+          return newTime;
+        });
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [isTimerActive, timeLeft]);
+
+  // Handle timeout submission
+  const handleTimeoutSubmit = async () => {
+    if (!sessionId || !currentQuestion || autoSubmitted) return;
+    
+    setAutoSubmitted(true);
+    setIsTimerActive(false);
+    
+    try {
+      // Calculate time spent (should be full time limit)
+      const timeSpentOnQuestion = currentQuestion.timeLimit || 300;
+      
+      // Call timeout API endpoint
+      const resp = await apiService.request(`/api/test/timeout-question/${sessionId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          questionNumber: questionNumber,
+          timeSpent: timeSpentOnQuestion,
+          code: code || ''
+        })
+      });
+
+      if (resp.testComplete || resp.testEnded) {
+        // Test is complete - show "Test Ended" instead of detailed results
+        setTestState('completed');
+        setTestResults({
+          message: resp.message || 'Test Ended',
+          candidateName: candidateName,
+          sessionId: sessionId,
+          status: 'completed'
+        });
+      } else if (resp.nextQuestion) {
+        // Move to next question
+        setCurrentQuestion(resp.nextQuestion);
+        setQuestionNumber(resp.questionNumber || (questionNumber + 1));
+        setTotalQuestions(resp.totalQuestions || totalQuestions);
+        
+        // Reset for next question
+        setTimeLeft(resp.nextQuestion.timeLimit || 300);
+        setTimeSpent(0);
+        setIsTimerActive(true);
+        setAutoSubmitted(false);
+        questionStartTimeRef.current = Date.now();
+        
+        // Update language and code for next question
+        if (resp.nextQuestion.signatures && resp.nextQuestion.signatures[language]) {
+          setCode(resp.nextQuestion.signatures[language]);
+        } else if (resp.nextQuestion.functionName) {
+          setCode(buildTemplateWithFunction(resp.nextQuestion.functionName, language));
+        } else {
+          setCode(getDefaultTemplate(language));
+        }
+        
+        // Clear previous results
+        setShowingResult(false);
+        setShowingSampleResults(false);
+        setIsResultsPanelExpanded(false);
+      }
+    } catch (err) {
+      console.error('Timeout submission error:', err);
+    }
+  };
+
   // Utility: format seconds into MM:SS
   function formatTime(seconds) {
     const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -437,14 +528,20 @@ int main() {
       const now = Date.now();
       const elapsed = questionStartTimeRef.current ? Math.floor((now - questionStartTimeRef.current) / 1000) : timeSpent;
       const resp = await apiService.submitCode(sessionId, code, questionNumber, elapsed);
-      // resp: { analysis, nextQuestion, testComplete, questionNumber, totalQuestions }
+      // resp: { analysis, nextQuestion, testComplete, testEnded, message, questionNumber, totalQuestions }
       if (resp.analysis) setAnalysis(resp.analysis);
       setShowingResult(true);
 
-      if (resp.testComplete) {
-        // finish
-        setTestResults(await apiService.getTestResults(sessionId));
+      if (resp.testComplete || resp.testEnded) {
+        // Test is complete - show "Test Ended" instead of detailed results
         setTestState('completed');
+        // Set simple test ended message instead of detailed results
+        setTestResults({
+          message: resp.message || 'Test Ended',
+          candidateName: candidateName,
+          sessionId: sessionId,
+          status: 'completed'
+        });
       } else if (resp.nextQuestion) {
         // move to next question
         setCurrentQuestion(resp.nextQuestion);
@@ -1297,196 +1394,63 @@ int main() {
     );
   }
 
-  // Results screen
+  // Results screen - now shows simple "Test Ended" message
   if (testState === 'completed') {
     return (
-      <div className="max-w-4xl mx-auto p-6">
-        <div className="bg-white rounded-lg shadow-md p-8">
-          <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">Test Completed!</h1>
-            <p className="text-gray-600">Here are your results</p>
-          </div>
-          
-          {testResults && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-blue-50 p-4 rounded-lg text-center">
-                  <p className="text-sm text-blue-600">Questions Attempted</p>
-                  <p className="text-2xl font-bold text-blue-900">
-                    {testResults.questionsAttempted}/{testResults.totalQuestions}
-                  </p>
-                </div>
-                <div className="bg-green-50 p-4 rounded-lg text-center">
-                  <p className="text-sm text-green-600">Average Score</p>
-                  <p className="text-2xl font-bold text-green-900">
-                    {Math.round(testResults.averageScore)}%
-                  </p>
-                </div>
-                <div className="bg-purple-50 p-4 rounded-lg text-center">
-                  <p className="text-sm text-purple-600">Difficulty</p>
-                  <p className="text-2xl font-bold text-purple-900 capitalize">
-                    {testResults.difficulty}
-                  </p>
-                </div>
-                <div className="bg-orange-50 p-4 rounded-lg text-center">
-                  <p className="text-sm text-orange-600">Language</p>
-                  <p className="text-2xl font-bold text-orange-900 capitalize">
-                    {testResults.language}
-                  </p>
-                </div>
-              </div>
-              
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Question Results</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {testResults.results.map((result, index) => (
-                    <div key={index} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-base font-medium text-gray-900">
-                          Question {result.questionNumber}
-                        </h4>
-                        <div className="flex items-center space-x-2">
-                          {result.analysis?.status === 'correct' ? (
-                            <div className="flex items-center space-x-1 text-green-600">
-                              <CheckCircle className="h-4 w-4" />
-                              <span className="font-medium text-sm">Correct</span>
-                            </div>
-                          ) : result.analysis?.status === 'timeout' ? (
-                            <div className="flex items-center space-x-1 text-gray-500">
-                              <Clock className="h-4 w-4" />
-                              <span className="font-medium text-sm">Timeout</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center space-x-1 text-red-600">
-                              <AlertCircle className="h-4 w-4" />
-                              <span className="font-medium text-sm">Needs Work</span>
-                            </div>
-                          )}
-                          <div className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            (result.analysis?.score || 0) >= 80 ? 'bg-green-100 text-green-800' :
-                            (result.analysis?.score || 0) >= 60 ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-red-100 text-red-800'
-                          }`}>
-                            {result.analysis?.score || 0}/100
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-3">
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="bg-white p-2 rounded border">
-                            <p className="text-xs font-medium text-gray-600 mb-1">Time Spent</p>
-                            <p className="text-sm text-gray-900 font-medium">
-                              {Math.floor(result.timeSpent / 60)}:{(result.timeSpent % 60).toString().padStart(2, '0')} min
-                            </p>
-                          </div>
-                          <div className="bg-white p-2 rounded border">
-                            <p className="text-xs font-medium text-gray-600 mb-1">Complexity</p>
-                            <p className="text-xs text-gray-900 font-mono">
-                              {result.analysis?.complexity || 'Not analyzed'}
-                            </p>
-                          </div>
-                        </div>
-
-                        {result.analysis?.feedback && (
-                          <div className="bg-white p-3 rounded border">
-                            <h6 className="text-xs font-medium text-gray-700 mb-1">Feedback</h6>
-                            <p className="text-xs text-gray-600 leading-relaxed">
-                              {result.analysis.feedback}
-                            </p>
-                          </div>
-                        )}
-
-                        {result.analysis?.testResults && result.analysis.testResults.length > 0 && (
-                          <div className="bg-white p-3 rounded border">
-                            <div className="flex items-center justify-between mb-2">
-                              <h6 className="text-xs font-medium text-gray-700">Test Cases</h6>
-                              <span className="text-xs text-gray-500">
-                                {result.analysis.testResults.filter(t => {
-                                  return typeof t === 'object' ? t.passed : t.includes('pass');
-                                }).length}/{result.analysis.testResults.length} passed
-                              </span>
-                            </div>
-                            <div className="space-y-1 max-h-32 overflow-y-auto">
-                              {result.analysis.testResults.map((test, idx) => {
-                                const passed = typeof test === 'object' ? test.passed : test.includes('pass');
-                                
-                                return (
-                                  <div key={idx} className={`flex items-center space-x-1 p-1 rounded text-xs ${
-                                    passed ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
-                                  }`}>
-                                    {passed ? (
-                                      <CheckCircle className="h-3 w-3 flex-shrink-0" />
-                                    ) : (
-                                      <AlertCircle className="h-3 w-3 flex-shrink-0" />
-                                    )}
-                                    <span className="font-mono text-xs">
-                                      Test {idx + 1}: {passed ? 'PASS' : 'FAIL'}
-                                    </span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {(result.analysis?.strengths?.length > 0 || result.analysis?.improvements?.length > 0) && (
-                          <div className="grid grid-cols-1 gap-2">
-                            {result.analysis?.strengths?.length > 0 && (
-                              <div className="bg-green-50 p-2 rounded border border-green-200">
-                                <h6 className="text-xs font-medium text-green-800 mb-1 flex items-center">
-                                  <CheckCircle className="h-3 w-3 mr-1" />
-                                  Strengths
-                                </h6>
-                                <ul className="text-xs text-green-700 space-y-0.5 max-h-20 overflow-y-auto">
-                                  {result.analysis.strengths.map((strength, idx) => (
-                                    <li key={idx} className="flex items-start">
-                                      <span className="text-green-600 mr-1 flex-shrink-0">•</span>
-                                      <span className="leading-tight">
-                                        {strength}
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-
-                            {result.analysis?.improvements?.length > 0 && (
-                              <div className="bg-blue-50 p-2 rounded border border-blue-200">
-                                <h6 className="text-xs font-medium text-blue-800 mb-1 flex items-center">
-                                  <AlertCircle className="h-3 w-3 mr-1" />
-                                  Improvements
-                                </h6>
-                                <ul className="text-xs text-blue-700 space-y-0.5 max-h-20 overflow-y-auto">
-                                  {result.analysis.improvements.map((improvement, idx) => (
-                                    <li key={idx} className="flex items-start">
-                                      <span className="text-blue-600 mr-1 flex-shrink-0">•</span>
-                                      <span className="leading-tight">
-                                        {improvement}
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              
-              <div className="text-center">
-                <button
-                  onClick={() => window.location.reload()}
-                  className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 font-medium"
-                >
-                  Take Another Test
-                </button>
-              </div>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+        <div className="max-w-md w-full">
+          <div className="bg-white rounded-xl shadow-lg p-8 text-center">
+            {/* Success Icon */}
+            <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
+              <CheckCircle className="w-10 h-10 text-green-600" />
             </div>
-          )}
+            
+            {/* Main Message */}
+            <h1 className="text-3xl font-bold text-gray-900 mb-3">
+              {testResults?.message || 'Test Ended'}
+            </h1>
+            
+            {/* Thank You Message */}
+            <p className="text-lg text-gray-600 mb-6">
+              Thank you for completing the coding assessment.
+            </p>
+            
+            {/* Additional Info */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+              <p className="text-blue-800 font-medium text-sm">
+                Your results have been saved and will be reviewed by our team.
+              </p>
+            </div>
+            
+            {/* Candidate Info */}
+            {candidateName && (
+              <div className="text-sm text-gray-500 mb-6">
+                Candidate: <span className="font-medium text-gray-700">{candidateName}</span>
+              </div>
+            )}
+            
+            {/* Session Info */}
+            {sessionId && (
+              <div className="text-xs text-gray-400 mb-6">
+                Session ID: {sessionId}
+              </div>
+            )}
+            
+            {/* Action Button */}
+            <button
+              onClick={() => window.location.reload()}
+              className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 font-semibold text-lg transition-colors"
+            >
+              Take Another Test
+            </button>
+            
+            {/* Professional Footer */}
+            <div className="mt-8 pt-6 border-t border-gray-200">
+              <p className="text-xs text-gray-500">
+                If you have any questions about your results, please contact your test administrator.
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     );
