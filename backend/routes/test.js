@@ -602,27 +602,55 @@ router.post('/start-session-by-candidate/:candidateId', async (req, res) => {
     console.log('[API] Starting database search for candidateId:', candidateId);
     console.log('[API] Collection config - primary:', configs._primaryName, 'fallback:', configs._fallbackName);
     
-    // Strategy 1: Use the built-in findOne with query transformation (most robust)
+    // Strategy 1: Try as ObjectId first (most likely case for new records)
     try {
-      console.log('[API] Strategy 1: Using enhanced findOne with query transformation');
-      foundDoc = await configs.findOne({ 'normalized.candidateId': candidateId });
-      if (foundDoc) {
-        console.log('[API] Found document via enhanced findOne, keys:', Object.keys(foundDoc));
+      console.log('[API] Strategy 1: Trying candidateId as ObjectId');
+      if (ObjectId.isValid(candidateId)) {
+        foundDoc = await configs.findOne({ candidateId: new ObjectId(candidateId) });
+        if (foundDoc) {
+          console.log('[API] Found document via candidateId ObjectId search, keys:', Object.keys(foundDoc));
+        }
       }
     } catch (dbErr1) {
-      console.warn('[API] Strategy 1 failed (enhanced findOne):', dbErr1 && dbErr1.message);
+      console.warn('[API] Strategy 1 failed (candidateId ObjectId):', dbErr1 && dbErr1.message);
     }
 
-    // Strategy 2: Direct candidateId search if not found
+    // Strategy 2: Try normalized.candidateId if not found
     if (!foundDoc) {
       try {
-        console.log('[API] Strategy 2: Direct candidateId search');
+        console.log('[API] Strategy 2: Using enhanced findOne with query transformation');
+        foundDoc = await configs.findOne({ 'normalized.candidateId': candidateId });
+        if (foundDoc) {
+          console.log('[API] Found document via enhanced findOne, keys:', Object.keys(foundDoc));
+        }
+      } catch (dbErr2) {
+        console.warn('[API] Strategy 2 failed (enhanced findOne):', dbErr2 && dbErr2.message);
+      }
+    }
+
+    // Strategy 3: Direct candidateId search as string if not found
+    if (!foundDoc) {
+      try {
+        console.log('[API] Strategy 3: Direct candidateId search as string');
         foundDoc = await configs.findOne({ candidateId: candidateId });
         if (foundDoc) {
           console.log('[API] Found document via direct candidateId search');
         }
-      } catch (dbErr2) {
-        console.warn('[API] Strategy 2 failed (direct candidateId):', dbErr2 && dbErr2.message);
+      } catch (dbErr3) {
+        console.warn('[API] Strategy 3 failed (direct candidateId):', dbErr3 && dbErr3.message);
+      }
+    }
+
+    // Strategy 4: Try by _id as last resort
+    if (!foundDoc && ObjectId.isValid(candidateId)) {
+      try {
+        console.log('[API] Strategy 4: Trying _id search');
+        foundDoc = await configs.findOne({ _id: new ObjectId(candidateId) });
+        if (foundDoc) {
+          console.log('[API] Found document via _id search');
+        }
+      } catch (dbErr4) {
+        console.warn('[API] Strategy 4 failed (_id search):', dbErr4 && dbErr4.message);
       }
     }
 
@@ -1705,10 +1733,33 @@ router.get('/config/by-candidate/:candidateId', async (req, res) => {
     const { candidateId } = req.params;
     console.log('[API] GET /api/test/config/by-candidate - candidateId=', candidateId);
     const configs = getConfigsCollection();
-    const doc = await configs.find({ 'normalized.candidateId': candidateId })
-      .sort({ createdAt: -1 })
-      .limit(1)
-      .toArray();
+    
+    let doc = null;
+    
+    // Try ObjectId first
+    if (ObjectId.isValid(candidateId)) {
+      doc = await configs.find({ candidateId: new ObjectId(candidateId) })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .toArray();
+    }
+    
+    // Fall back to normalized search
+    if (!doc || doc.length === 0) {
+      doc = await configs.find({ 'normalized.candidateId': candidateId })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .toArray();
+    }
+    
+    // Final fallback to string candidateId
+    if (!doc || doc.length === 0) {
+      doc = await configs.find({ candidateId: candidateId })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .toArray();
+    }
+    
     if (!doc || doc.length === 0) {
       console.log('[API] GET /api/test/config/by-candidate - not found for candidateId=', candidateId);
       return res.status(404).json({ error: 'Config not found for candidate' });
