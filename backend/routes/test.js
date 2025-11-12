@@ -2,9 +2,25 @@ const express = require('express');
 const OpenAI = require('openai');
 const router = express.Router();
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize OpenAI conditionally
+let openai = null;
+if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim() !== '') {
+  try {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  } catch (error) {
+    console.warn('OpenAI initialization failed in test.js:', error.message);
+  }
+}
+
+// Helper to check if OpenAI is available
+function checkOpenAI() {
+  if (!openai) {
+    throw new Error('OpenAI is not configured. Please provide OPENAI_API_KEY environment variable.');
+  }
+  return openai;
+}
 
 // Small helper to avoid logging extremely large payloads or secrets
 function sanitizeLog(obj) {
@@ -796,6 +812,32 @@ router.get('/candidates', async (req, res) => {
 });
 
 // Get candidate information and validate questions exist
+// Debug endpoint to check database connectivity
+router.get('/debug/database', async (req, res) => {
+  try {
+    const configs = getConfigsCollection();
+    const totalDocs = await configs.find({}).limit(5).toArray();
+    const candidateIds = totalDocs.map(doc => doc.candidateId || doc.normalized?.candidateId || 'no-id');
+    
+    res.json({
+      success: true,
+      totalDocuments: totalDocs.length,
+      sampleCandidateIds: candidateIds,
+      firstDoc: totalDocs[0] ? {
+        candidateId: totalDocs[0].candidateId,
+        normalizedCandidateId: totalDocs[0].normalized?.candidateId,
+        keys: Object.keys(totalDocs[0])
+      } : null
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
 router.get('/candidate/:candidateId', async (req, res) => {
   try {
     const candidateId = req.params.candidateId;
@@ -808,20 +850,27 @@ router.get('/candidate/:candidateId', async (req, res) => {
     const configs = getConfigsCollection();
     let foundDoc = null;
     
+    console.log('[API] Searching for candidate ID:', candidateId);
+    
     // Try multiple query strategies
     try {
+      console.log('[API] Trying normalized.candidateId query...');
       const docs = await configs.find({ 'normalized.candidateId': candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+      console.log('[API] Normalized query result count:', docs?.length || 0);
       if (docs && docs.length > 0) {
         foundDoc = docs[0];
       }
     } catch (err1) {
+      console.warn('[API] Normalized query failed:', err1.message);
       try {
+        console.log('[API] Trying direct candidateId query...');
         const docs = await configs.find({ candidateId: candidateId }).sort({ createdAt: -1 }).limit(1).toArray();
+        console.log('[API] Direct query result count:', docs?.length || 0);
         if (docs && docs.length > 0) {
           foundDoc = docs[0];
         }
       } catch (err2) {
-        console.warn('[API] Database queries failed for candidate lookup:', err2 && err2.message);
+        console.warn('[API] Database queries failed for candidate lookup:', err2.message);
       }
     }
 

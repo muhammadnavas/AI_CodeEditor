@@ -9,10 +9,23 @@ const { connectToDB } = require('./services/db');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Trust proxy for deployment platforms (Render, Heroku, etc.)
+app.set('trust proxy', 1);
+
+// Initialize OpenAI (optional - only if API key is provided)
+let openai = null;
+if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim() !== '') {
+  try {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    console.log('OpenAI initialized successfully');
+  } catch (error) {
+    console.warn('OpenAI initialization failed:', error.message);
+  }
+} else {
+  console.log('OpenAI API key not provided - AI features disabled');
+}
 
 // Security Middleware
 app.use(helmetConfig);
