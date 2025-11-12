@@ -23,6 +23,90 @@ function checkOpenAI() {
   return openai;
 }
 
+// Save final test results to the candidate collection
+async function saveFinalTestResultsToCandidate(sessionId, session) {
+  try {
+    const configs = getConfigsCollection();
+    
+    // Calculate final statistics
+    const totalScore = session.results.reduce((sum, result) => {
+      if (result.analysis && result.analysis.score) {
+        return sum + result.analysis.score;
+      }
+      return sum;
+    }, 0);
+
+    const averageScore = session.results.length > 0 ? totalScore / session.results.length : 0;
+    const questionsAttempted = session.results.length;
+    const questionsCompleted = session.results.filter(r => r.analysis && r.analysis.status === 'completed').length;
+
+    // Prepare test completion data
+    const testCompletionData = {
+      sessionId,
+      testStatus: 'completed',
+      testCompletedAt: new Date(),
+      testDuration: session.startTime ? new Date() - new Date(session.startTime) : null,
+      
+      // Test performance summary
+      testResults: {
+        totalQuestions: session.totalQuestions,
+        questionsAttempted,
+        questionsCompleted,
+        totalScore,
+        averageScore: Math.round(averageScore * 100) / 100, // Round to 2 decimal places
+        language: session.language,
+        difficulty: session.difficulty
+      },
+      
+      // Detailed question results
+      questionResults: session.results.map(result => ({
+        questionNumber: result.questionNumber,
+        timeSpent: result.timeSpent,
+        score: result.analysis?.score || 0,
+        status: result.analysis?.status || 'incomplete',
+        feedback: result.analysis?.feedback || '',
+        codeSubmitted: result.code,
+        submittedAt: result.timestamp
+      })),
+      
+      // Update timestamp
+      testResultsUpdatedAt: new Date().toISOString()
+    };
+
+    // Find and update the candidate record
+    let updateResult;
+    
+    // Try to find by candidateId first (ObjectId)
+    if (session.candidateId && ObjectId.isValid(session.candidateId)) {
+      updateResult = await configs.updateOne(
+        { candidateId: new ObjectId(session.candidateId) },
+        { $set: testCompletionData }
+      );
+    }
+    
+    // If not found, try by session data
+    if (!updateResult || updateResult.matchedCount === 0) {
+      updateResult = await configs.updateOne(
+        { candidateName: session.candidateName, candidateEmail: session.candidateEmail },
+        { $set: testCompletionData }
+      );
+    }
+
+    if (updateResult.matchedCount === 0) {
+      throw new Error('Candidate record not found for test result update');
+    }
+
+    console.log(`[API] Test results saved for candidate: ${session.candidateName} (${session.candidateEmail})`);
+    console.log(`[API] Score: ${averageScore}% (${questionsCompleted}/${session.totalQuestions} completed)`);
+    
+    return testCompletionData;
+
+  } catch (error) {
+    console.error('[API] Error saving test results to candidate:', error.message);
+    throw error;
+  }
+}
+
 // Small helper to avoid logging extremely large payloads or secrets
 function sanitizeLog(obj) {
   try {
@@ -1345,10 +1429,22 @@ router.post('/submit-code', async (req, res) => {
       testComplete = true;
     }
 
+    // If test is complete, save all results to the candidate collection
+    if (testComplete) {
+      try {
+        await saveFinalTestResultsToCandidate(sessionId, session);
+        console.log('[API] Final test results saved to candidate collection');
+      } catch (saveError) {
+        console.error('[API] Failed to save final results to candidate:', saveError.message);
+      }
+    }
+
     res.json({
       analysis,
       nextQuestion,
       testComplete,
+      testEnded: testComplete, // Add explicit test ended flag
+      message: testComplete ? 'Test Ended' : null,
       questionNumber: testComplete ? questionNumber : questionNumber + 1,
       totalQuestions: session.totalQuestions,
       sessionId
@@ -1404,12 +1500,23 @@ router.post('/timeout-question', async (req, res) => {
       testComplete = true;
     }
 
+    // If test is complete, save all results to the candidate collection
+    if (testComplete) {
+      try {
+        await saveFinalTestResultsToCandidate(sessionId, session);
+        console.log('[API] Final test results saved to candidate collection (timeout completion)');
+      } catch (saveError) {
+        console.error('[API] Failed to save final results to candidate (timeout):', saveError.message);
+      }
+    }
+
     res.json({
       nextQuestion,
       testComplete,
+      testEnded: testComplete,
+      message: testComplete ? 'Test Ended' : 'Time expired, moving to next question',
       questionNumber: testComplete ? questionNumber : questionNumber + 1,
-      totalQuestions: session.totalQuestions,
-      message: 'Time expired, moving to next question'
+      totalQuestions: session.totalQuestions
     });
 
   } catch (error) {
@@ -2003,44 +2110,32 @@ router.post('/question-bank/import', async (req, res) => {
 });
 
 // Get test results
+// Results endpoint - now returns "Test Ended" message instead of detailed results
 router.get('/results/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    console.log('[API] GET /api/test/results/:sessionId -', sessionId);
+    console.log('[API] GET /api/test/results/:sessionId -', sessionId, '(redirected to test ended message)');
     
     const session = testSessions.get(sessionId);
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    const totalScore = session.results.reduce((sum, result) => {
-      if (result.analysis && result.analysis.score) {
-        return sum + result.analysis.score;
-      }
-      return sum;
-    }, 0);
-
-    const averageScore = session.results.length > 0 ? totalScore / session.results.length : 0;
-
+    // Return simple test ended message instead of detailed results
     res.json({
       sessionId,
       candidateName: session.candidateName,
-      difficulty: session.difficulty,
-      language: session.language,
-      startTime: session.startTime,
-      endTime: new Date(),
-      results: session.results,
-      totalScore,
-      averageScore,
-      questionsAttempted: session.results.length,
-      totalQuestions: session.totalQuestions
+      message: 'Test Ended',
+      status: 'completed',
+      testCompletedAt: new Date(),
+      note: 'Test results have been saved. Thank you for participating!'
     });
 
   } catch (error) {
     console.error('Get Results Error:', error);
     res.status(500).json({ 
-      error: 'Failed to get results',
-      details: error.message 
+      error: 'Test session ended',
+      message: 'Test Ended'
     });
   }
 });
