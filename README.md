@@ -1,261 +1,259 @@
-# AI Code Editor
+# 🚀 AI CodeEditor - Intelligent Coding Assessment Platform
 
-A full-stack AI-powered code editor with real-time code execution and AI assistance.
+A comprehensive full-stack platform for conducting AI-powered coding assessments with real-time code execution, multi-language support, and automated evaluation.
+
+## ✨ Features
+
+### 🎯 **Core Functionality**
+- **Live Coding Assessment**: Real-time coding tests with timer and auto-submission
+- **Multi-Language Support**: JavaScript, Python, Java, C++, TypeScript
+- **Cloud Code Execution**: Judge0 API integration with local fallbacks
+- **AI-Powered Analysis**: Intelligent code evaluation and feedback
+- **Question Bank**: LeetCode/HackerEarth style programming challenges
+- **Candidate Management**: Complete assessment workflow from setup to results
+
+### 🔧 **Technical Capabilities**
+- **Monaco Code Editor**: VS Code-like editing experience with syntax highlighting
+- **Real-time Test Execution**: Run sample test cases during assessment
+- **Automatic Timeout Handling**: Submit incomplete solutions when time expires
+- **Session Management**: Persistent test sessions with candidate tracking
+- **Database Integration**: MongoDB for candidate data and test results
+- **Responsive Design**: Works seamlessly on desktop and mobile devices
+
+### 📊 **Assessment Features**
+- **Multiple Difficulty Levels**: Easy, Medium, Hard questions
+- **Sample Test Cases**: Preview expected input/output before submission
+- **Live Code Testing**: Run code against sample tests during development
+- **Progress Tracking**: Question counter, timer, and completion status
+- **Professional UI**: Clean, distraction-free assessment environment
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Frontend      │    │     Backend      │    │    Database     │
+│   (Next.js)     │◄──►│   (Express.js)   │◄──►│   (MongoDB)     │
+│                 │    │                  │    │                 │
+│ • React UI      │    │ • REST API       │    │ • Candidates    │
+│ • Monaco Editor │    │ • Code Execution │    │ • Questions     │
+│ • Timer System  │    │ • AI Integration │    │ • Test Results  │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                               │
+                               ▼
+                    ┌──────────────────┐
+                    │  Code Execution  │
+                    │                  │
+                    │ • Judge0 API     │
+                    │ • Local Compilers│
+                    │ • Docker Support │
+                    └──────────────────┘
+```
 
 ## 🚀 Tech Stack
 
-- **Frontend**: Next.js 14, React, TailwindCSS, Monaco Editor
-- **Backend**: Node.js, Express, OpenAI API
-- **Infrastructure**: Docker
-- **Code Execution**: Docker containers for Python, JavaScript, Java, C++
+### Frontend
+- **Framework**: Next.js 14 with React 18
+- **Styling**: TailwindCSS for modern UI components
+- **Code Editor**: Monaco Editor (VS Code engine)
+- **Icons**: Lucide React for consistent iconography
+- **HTTP Client**: Fetch API with custom service layer
+
+### Backend
+- **Runtime**: Node.js with Express.js framework
+- **Database**: MongoDB with Mongoose ODM
+- **Code Execution**: Judge0 API + local compiler fallbacks
+- **Security**: CORS, input validation, rate limiting
+- **Session Management**: In-memory sessions with MongoDB persistence
+
+### Infrastructure
+- **Deployment**: Render (backend) + Vercel (frontend)
+- **Code Execution**: Judge0 cloud service with free tier fallback
+- **Database Hosting**: MongoDB Atlas or local MongoDB
+- **Environment Management**: dotenv for configuration
 
 ## 📋 Prerequisites
 
-- Node.js 18+ (for local development)
-- Docker & Docker Compose (for production deployment)
-- OpenAI API Key
+- **Node.js**: Version 18.0 or higher
+- **MongoDB**: Local installation or MongoDB Atlas account
+- **Package Manager**: npm or yarn
+- **Git**: For version control
+- **Code Editor**: VS Code recommended
 
-## 🔧 Local Development Setup
+## 🔧 Quick Start
 
-### 1. Clone and Install
+### 1. Repository Setup
 
 ```bash
 # Clone the repository
 git clone https://github.com/muhammadnavas/AI_CodeEditor.git
 cd AI_CodeEditor
+
+# Install all dependencies
+npm run install-all
+# Or manually:
+# cd backend && npm install
+# cd ../frontend && npm install
 ```
 
-### 2. Backend Setup
+### 2. Environment Configuration
 
+#### Backend Environment (`.env`)
 ```bash
 cd backend
-
-# Install dependencies
-npm install
-
-# Create .env file from example
 cp .env.example .env
-
-# Edit .env and add your OpenAI API key
-# OPENAI_API_KEY=sk-your-actual-key-here
 ```
 
-### 3. Frontend Setup
+Edit `backend/.env`:
+```env
+# Database Configuration
+MONGODB_URI=mongodb://localhost:27017/ai_codeeditor
+# Or use MongoDB Atlas:
+# MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/ai_codeeditor
 
+# Judge0 Configuration (Optional - has free fallback)
+JUDGE0_API_URL=https://judge0-ce.p.rapidapi.com
+JUDGE0_API_KEY=your-rapidapi-key
+JUDGE0_FREE_API_URL=https://judge0-ce.p.rapidapi.com
+
+# Server Configuration
+PORT=3001
+CORS_ORIGIN=http://localhost:3000,https://your-frontend-domain.com
+NODE_ENV=development
+```
+
+#### Frontend Environment (`.env.local`)
 ```bash
-cd ../frontend
-
-# Install dependencies
-npm install
-
-# Create .env.local file
+cd frontend
 cp .env.example .env.local
-
-# Edit .env.local if needed (default: http://localhost:3001)
 ```
 
-### 4. Run Development Servers
+Edit `frontend/.env.local`:
+```env
+# Backend API URL
+NEXT_PUBLIC_API_URL=http://localhost:3001
+# For production: https://your-backend-domain.com
+```
+
+### 3. Database Setup
+
+#### Local MongoDB
+```bash
+# Start MongoDB service
+# macOS: brew services start mongodb/brew/mongodb-community
+# Windows: net start MongoDB
+# Linux: sudo systemctl start mongod
+
+# Verify connection
+mongosh
+# Should connect to mongodb://localhost:27017
+```
+
+### 4. Start Development Servers
 
 **Terminal 1 - Backend:**
 ```bash
 cd backend
 npm run dev
+# Server starts at http://localhost:3001
 ```
 
 **Terminal 2 - Frontend:**
 ```bash
 cd frontend
 npm run dev
+# Application available at http://localhost:3000
 ```
 
-Access the application:
-- Frontend: http://localhost:5000
-- Backend API: http://localhost:3001
+## 📚 Usage Guide
 
-## 🐳 Docker Production Deployment
+### For Test Administrators
 
-### Option 1: Docker Compose (Recommended for VPS)
-
-1. **Set Environment Variables**
-
+#### 1. Add Candidates to Database
 ```bash
+# Add candidate with coding questions
 cd backend
-
-# Copy and edit .env file
-cp .env.example .env
+node insert_candidate.js
 ```
 
-Edit `.env` and set:
-```env
-OPENAI_API_KEY=sk-your-actual-openai-key
-CORS_ORIGIN=https://yourdomain.com
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com
-NODE_ENV=production
-```
+#### 2. Create Assessment Sessions
+Candidates can start assessments using:
+- **Candidate ID**: `CAND_001`, `CAND_002`, etc.
+- **URL Parameters**: `?candidateId=CAND_001`
+- **Programmatic**: `window.startCodingTest('CAND_001')`
 
-2. **Build and Start Services**
+#### 3. Monitor and Review Results
+Test results are automatically saved to the `shortlistedcandidates` collection with comprehensive data including:
+- Code submissions for each question
+- Time spent per question
+- Scores and performance metrics
+- Test completion status
 
-```bash
-cd backend
-docker compose up -d --build
-```
+### For Candidates
 
-3. **Verify Services**
+#### 1. Access Assessment
+- Open the assessment URL provided
+- Enter your Candidate ID (e.g., `CAND_001`)
+- Click "Start Coding Test"
 
-```bash
-# Check running containers
-docker compose ps
+#### 2. Take Assessment
+- Read problem statement carefully
+- Write code in the Monaco editor
+- Select programming language (JavaScript, Python, Java, C++)
+- Use "Run Code" to test against sample cases
+- Click "Submit Code" when ready
+- Complete all questions within time limits
 
-# View logs
-docker compose logs -f
+#### 3. Assessment Completion
+- Automatic submission when time expires
+- Simple "Test Ended" message displayed
+- Results saved automatically for review
 
-# Test backend health
-curl http://localhost:3001/health
-```
-
-4. **Stop Services**
-
-```bash
-docker compose down
-```
-
-### Option 2: Deploy to Cloud Platforms
-
-#### **Railway** (Easiest)
-
-1. Push code to GitHub
-2. Connect Railway to your repo
-3. Create two services:
-   - **Backend**: Root directory = `backend/`, Start command = `npm start`
-   - **Frontend**: Root directory = `frontend/`, Start command = `npm start`
-4. Add environment variables for each service
-5. Railway will auto-deploy on push
-
-#### **Render**
-
-1. Create two Web Services:
-   - **Backend**:
-     - Build Command: `cd backend && npm install`
-     - Start Command: `cd backend && npm start`
-   - **Frontend**:
-     - Build Command: `cd frontend && npm install && npm run build`
-     - Start Command: `cd frontend && npm start`
-
-2. Add PostgreSQL and Redis from Render's Add-ons *(Optional - not currently used)*
-
-3. Set environment variables from `.env.example`
-
-#### **Vercel + Backend on VPS**
-
-**Frontend (Vercel):**
-```bash
-cd frontend
-vercel --prod
-```
-
-**Backend (DigitalOcean/AWS/etc):**
-```bash
-# On your VPS
-git clone <repo>
-cd AI_CodeEditor/backend
-cp .env.example .env
-# Edit .env
-docker compose up -d --build
-```
-
-## 🔒 Security Checklist
-
-- [ ] ✅ `.env` files are in `.gitignore`
-- [ ] ✅ Change default database passwords
-- [ ] ✅ Add your domain to `CORS_ORIGIN`
-- [ ] ⚠️  **CRITICAL**: Never commit real API keys to git!
-- [ ] ✅ Use strong random strings for `API_KEY`
-- [ ] ✅ Enable HTTPS in production
-- [ ] ✅ Set `NODE_ENV=production`
-
-## 🛠️ Environment Variables
-
-### Backend (.env)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENAI_API_KEY` | ✅ Yes | OpenAI API key for AI features |
-| `PORT` | No | Backend port (default: 3001) |
-| `CORS_ORIGIN` | Yes | Allowed frontend origins |
-| `NODE_ENV` | Yes | `development` or `production` |
-
-### Frontend (.env.local)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NEXT_PUBLIC_API_URL` | ✅ Yes | Backend API URL |
-
-## 📡 API Endpoints
-
-- `GET /health` - Health check
-- `POST /api/code/execute` - Execute code
-- `POST /api/test/generate` - Generate AI tests
-- `POST /setup-docker` - Pull code execution images
-
-## 🐛 Troubleshooting
-
-### Docker Issues
-
-```bash
-# Check Docker is running
-docker ps
-
-# View container logs
-docker compose logs backend
-docker compose logs frontend
-
-# Restart services
-docker compose restart
-
-# Rebuild from scratch
-docker compose down -v
-docker compose up -d --build
-```
-
-### Port Conflicts
-
-If ports 3000/3001 are in use:
-```bash
-# Change in backend/.env
-PORT=3002
-
-# Change in docker-compose.yml
-ports:
-  - "3002:3001"
-```
-
-### OpenAI API Errors
-
-- Verify API key is valid
-- Check billing/quota on OpenAI dashboard
-- Ensure `OPENAI_API_KEY` is set correctly
-
-## 📄 License
-
-MIT License - See LICENSE file for details
+⚠️ **Production Security Checklist:**
+- [ ] Use HTTPS for all production endpoints
+- [ ] Implement API rate limiting
+- [ ] Set strong MongoDB authentication
+- [ ] Use environment-specific CORS origins
+- [ ] Enable MongoDB Atlas IP whitelisting
+- [ ] Monitor Judge0 API usage and costs
+- [ ] Implement request logging and monitoring
 
 ## 🤝 Contributing
 
+### Development Workflow
 1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Open a Pull Request
+2. Create feature branch: `git checkout -b feature/amazing-feature`
+3. Follow code style guidelines (ESLint + Prettier configured)
+4. Add tests for new functionality
+5. Commit changes: `git commit -m 'Add amazing feature'`
+6. Push to branch: `git push origin feature/amazing-feature`
+7. Open Pull Request with detailed description
 
-## 📧 Support
+### Code Style Guidelines
+- Use ES6+ JavaScript features
+- Follow React best practices for frontend
+- Implement proper error handling
+- Add JSDoc comments for functions
+- Use meaningful variable and function names
 
-For issues and questions, please open a GitHub issue.
+## 📞 Support & Community
+
+- **GitHub Issues**: [Report bugs or request features](https://github.com/muhammadnavas/AI_CodeEditor/issues)
+- **Documentation**: Check `/docs` folder for detailed guides
+- **Discord**: Join our development community (link in issues)
+- **Email**: Contact maintainers for enterprise support
+
+## 🗺️ Roadmap
+
+### Upcoming Features
+- [ ] Real-time collaboration on code
+- [ ] Video proctoring integration
+- [ ] Advanced AI code review
+- [ ] Custom question bank import
+- [ ] Detailed analytics dashboard
+- [ ] White-label customization
+- [ ] Mobile app development
+- [ ] Integration with ATS systems
 
 ---
 
-**⚠️ SECURITY WARNING**: Your `.env` file currently contains a real OpenAI API key! Please:
-1. Revoke the exposed key at https://platform.openai.com/api-keys
-2. Generate a new key
-3. Run: `git rm --cached backend/.env`
-4. Add `.env` to `.gitignore` (already done)
-5. Never commit `.env` files again
+**Built with ❤️ by the AI CodeEditor team**
