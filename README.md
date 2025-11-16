@@ -238,8 +238,6 @@ Test results are automatically saved to the `shortlistedcandidates` collection w
 ## 📞 Support & Community
 
 - **GitHub Issues**: [Report bugs or request features](https://github.com/muhammadnavas/AI_CodeEditor/issues)
-- **Documentation**: Check `/docs` folder for detailed guides
-- **Discord**: Join our development community (link in issues)
 - **Email**: Contact maintainers for enterprise support
 
 ## 🗺️ Roadmap
